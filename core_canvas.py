@@ -7,6 +7,7 @@ import math
 from managers.color_manager import ColorManager
 from tools.tool_select import SelectTool
 from tools.tool_line import LineTool
+from tools.tool_rect import RectTool
 
 class CommandDeleteLines(QUndoCommand):
     def __init__(self, scene, items):
@@ -52,7 +53,8 @@ class CADGraphicsView(QGraphicsView):
 
         self.tools = {
             "选择": SelectTool(self),
-            "直线": LineTool(self)
+            "直线": LineTool(self),
+            "矩形": RectTool(self)
         }
         self.current_tool = self.tools["直线"] 
         self.current_tool.activate()
@@ -188,10 +190,17 @@ class CADGraphicsView(QGraphicsView):
         snapped_p = None
 
         for item in self.scene().items():
-            if isinstance(item, QGraphicsLineItem) and item not in (self.polar_line, self.tracking_line, self.track_marker_h, self.track_marker_v):
-                if hasattr(self.current_tool, 'temp_line') and item == self.current_tool.temp_line: continue
-                line = item.line()
-                for p in (line.p1(), line.p2()):
+            # 只要实体有 get_grips 方法，并且不是系统辅助线，就纳入吸附检测
+            if hasattr(item, 'get_grips') and item not in (self.polar_line, self.tracking_line, self.track_marker_h, self.track_marker_v):
+                
+                # 排除正在绘制中、还没落笔的临时直线和临时矩形
+                if hasattr(self.current_tool, 'temp_line') and item == getattr(self.current_tool, 'temp_line', None):
+                    continue
+                if hasattr(self.current_tool, 'temp_rect') and item == getattr(self.current_tool, 'temp_rect', None):
+                    continue
+                
+                # 【核心修复】：直接遍历图元自身的夹点作为吸附目标，不再强行调用 item.line()
+                for p in item.get_grips():
                     dist = math.hypot(p.x() - raw_point.x(), p.y() - raw_point.y())
                     if dist < snap_threshold and dist < closest_dist:
                         closest_dist = dist
