@@ -12,16 +12,13 @@ class CADLineItem(QGraphicsLineItem):
             QGraphicsItem.GraphicsItemFlag.ItemIsFocusable
         )
         self.setZValue(100) 
-        
-        # 开启悬停探测
         self.setAcceptHoverEvents(True) 
         self._is_hovered = False
-        # 记录当前被捏住的夹点 (-1 代表静止状态)
         self.hot_grip_index = -1 
 
     def hoverEnterEvent(self, event):
         self._is_hovered = True
-        self.update() # 触发重绘
+        self.update() 
         super().hoverEnterEvent(event)
 
     def hoverLeaveEvent(self, event):
@@ -30,8 +27,6 @@ class CADLineItem(QGraphicsLineItem):
         super().hoverLeaveEvent(event)
 
     def shape(self):
-        # 【神级优化】：给 1 像素的线条包上一层 10 像素厚的“隐形肉体”
-        # 彻底解决线条太细导致鼠标点不中、悬停不灵敏的问题！
         stroker = QPainterPathStroker()
         stroker.setWidth(10.0) 
         return stroker.createStroke(super().shape())
@@ -42,12 +37,16 @@ class CADLineItem(QGraphicsLineItem):
         return rect.adjusted(-padding, -padding, padding, padding)
 
     def paint(self, painter, option, widget=None):
-        pen = self.pen()
+        # 【核心修复】：pen() 始终保存着用户的真实颜色
+        pen = QPen(self.pen())
         
-        # 【悬停预选高亮】：没被选中 + 鼠标滑过 = 冰蓝色粗体发光
-        if self._is_hovered and not self.isSelected():
+        # 视觉优先级的覆盖渲染（绝不污染真实的 self.pen()）
+        if self.isSelected():
             pen.setWidth(2)
-            pen.setColor(QColor(180, 220, 255)) 
+            pen.setColor(QColor(0, 120, 215)) # 选中时的 CAD 蓝
+        elif self._is_hovered:
+            pen.setWidth(2)
+            pen.setColor(QColor(180, 220, 255)) # 悬停高亮
             
         painter.setPen(pen)
         painter.drawLine(self.line())
@@ -57,4 +56,4 @@ class CADLineItem(QGraphicsLineItem):
         p1 = line.p1()
         p2 = line.p2()
         mid = QPointF((p1.x() + p2.x()) / 2.0, (p1.y() + p2.y()) / 2.0)
-        return [p1, mid, p2] # 索引: 0=起点, 1=中点, 2=终点
+        return [p1, mid, p2]

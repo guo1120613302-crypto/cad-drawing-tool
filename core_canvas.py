@@ -1,12 +1,11 @@
 # core_canvas.py
 from PyQt6.QtWidgets import QGraphicsView, QGraphicsLineItem, QGraphicsTextItem, QGraphicsRectItem, QGraphicsItem
-from PyQt6.QtCore import Qt, QLineF, QPointF
-from PyQt6.QtGui import QPen, QColor, QPainter, QKeyEvent, QUndoStack, QUndoCommand, QKeySequence
+from PyQt6.QtCore import Qt, QLineF, QPointF, QRectF
+from PyQt6.QtGui import QPen, QColor, QPainter, QKeyEvent, QUndoStack, QUndoCommand, QKeySequence, QBrush
 import math
 
-from PyQt6.QtCore import Qt, QLineF, QPointF, QRectF  # 加上 QRectF
-from PyQt6.QtGui import QPen, QColor, QPainter, QKeyEvent, QUndoStack, QUndoCommand, QKeySequence, QBrush # 加上 QBrush
-
+# 引入刚刚新建的颜色管理器
+from managers.color_manager import ColorManager
 from tools.tool_select import SelectTool
 from tools.tool_line import LineTool
 
@@ -29,6 +28,10 @@ class CADGraphicsView(QGraphicsView):
     def __init__(self, scene, main_window):
         super().__init__(scene)
         self.main_window = main_window
+        
+        # 【核心修复】：必须在任何工具或外部 UI 调用前，先初始化颜色管家
+        self.color_manager = ColorManager()
+        
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus) 
         self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -37,19 +40,16 @@ class CADGraphicsView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         
         self.undo_stack = QUndoStack(self)
-        self.scene().selectionChanged.connect(self._on_selection_changed)
+       
         
         self._is_panning = False
         self._pan_start_pos = None
         
-        # 全局记忆状态
         self.last_cursor_point = QPointF(0, 0)
         self.acquired_point = None 
         
-        # 全局 UI 组件池 (极轴、十字追踪、HUD等)
         self._init_global_ui_components()
 
-        # 插件化工具池
         self.tools = {
             "选择": SelectTool(self),
             "直线": LineTool(self)
@@ -60,32 +60,6 @@ class CADGraphicsView(QGraphicsView):
         if hasattr(self.main_window, 'toolbox'):
             for action in self.main_window.toolbox.actions():
                 action.triggered.connect(lambda checked, name=action.text(): self.switch_tool(name))
-        
-        
-    def drawForeground(self, painter, rect):
-        """【全局夹点渲染引擎】：统一接管所有被选中对象的夹点绘制"""
-        super().drawForeground(painter, rect)
-        
-        selected_items = self.scene().selectedItems()
-        if not selected_items:
-            return
-            
-        # 计算缩放比，确保夹点在屏幕上永远是固定大小 (8x8 像素)
-        lod = self.transform().m11()
-        if lod <= 0: return
-        grip_size = 8.0 / lod
-        half_size = grip_size / 2.0
-        
-        # CAD 经典蓝色夹点样式，带纯白极细边框
-        painter.setBrush(QBrush(QColor(0, 120, 215)))
-        painter.setPen(QPen(QColor(255, 255, 255), 1.0 / lod))
-        
-        # 遍历所有被选中的对象，只要它有 get_grips 方法，就统一画上夹点
-        for item in selected_items:
-            if hasattr(item, 'get_grips'):
-                for p in item.get_grips():
-                    painter.drawRect(QRectF(p.x() - half_size, p.y() - half_size, grip_size, grip_size))
-
 
     def _init_global_ui_components(self):
         self.polar_line = QGraphicsLineItem()
@@ -154,17 +128,7 @@ class CADGraphicsView(QGraphicsView):
         self.hud_angle.hide()
         self.hud_polar_info.hide()
 
-    def _on_selection_changed(self):
-        for item in self.scene().items():
-            if item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsSelectable:
-                if item.isSelected():
-                    pen = QPen(QColor(0, 120, 215), 2)
-                    pen.setCosmetic(True)
-                    item.setPen(pen)
-                else:
-                    pen = QPen(QColor(255, 255, 255), 1)
-                    pen.setCosmetic(True)
-                    item.setPen(pen)
+ 
 
     def drawBackground(self, painter, rect):
         super().drawBackground(painter, rect)
@@ -198,13 +162,10 @@ class CADGraphicsView(QGraphicsView):
         painter.drawLines(major_lines)
         
     def drawForeground(self, painter, rect):
-        from PyQt6.QtCore import QRectF
-        from PyQt6.QtGui import QBrush, QColor, QPen
         super().drawForeground(painter, rect)
         
         selected_items = self.scene().selectedItems()
-        if not selected_items:
-            return
+        if not selected_items: return
             
         lod = self.transform().m11()
         if lod <= 0: return
@@ -217,16 +178,12 @@ class CADGraphicsView(QGraphicsView):
         
         for item in selected_items:
             if hasattr(item, 'get_grips'):
-                # 侦测这个实体当前有没有热点 (被捏住的点)
                 hot_idx = getattr(item, 'hot_grip_index', -1)
                 for i, p in enumerate(item.get_grips()):
-                    if i == hot_idx:
-                        # 热夹点：纯红色
-                        painter.setBrush(QBrush(QColor(255, 0, 0))) 
-                    else:
-                        # 默认夹点：CAD蓝
-                        painter.setBrush(QBrush(QColor(0, 120, 215))) 
+                    if i == hot_idx: painter.setBrush(QBrush(QColor(255, 0, 0))) 
+                    else: painter.setBrush(QBrush(QColor(0, 120, 215))) 
                     painter.drawRect(QRectF(p.x() - half_size, p.y() - half_size, grip_size, grip_size))
+
     def _get_snapped_endpoint(self, raw_point):
         snap_threshold = 10.0 / self.transform().m11() 
         closest_dist = float('inf')
@@ -234,8 +191,7 @@ class CADGraphicsView(QGraphicsView):
 
         for item in self.scene().items():
             if isinstance(item, QGraphicsLineItem) and item not in (self.polar_line, self.tracking_line, self.track_marker_h, self.track_marker_v):
-                if hasattr(self.current_tool, 'temp_line') and item == self.current_tool.temp_line:
-                    continue
+                if hasattr(self.current_tool, 'temp_line') and item == self.current_tool.temp_line: continue
                 line = item.line()
                 for p in (line.p1(), line.p2()):
                     dist = math.hypot(p.x() - raw_point.x(), p.y() - raw_point.y())
@@ -244,20 +200,16 @@ class CADGraphicsView(QGraphicsView):
                         snapped_p = p
         return snapped_p
 
-    # ================= 全局物理拦截与吸附引擎 =================
     def _calculate_global_snap(self, raw_point):
-        """【核心：接管所有吸附计算】无论用什么工具，都会经过这里进行坐标清洗"""
         final_point = QPointF(raw_point)
         snap_threshold_scene = 10.0 / self.transform().m11() 
-        
-        # 1. 尝试直接端点吸附
         snapped_p = self._get_snapped_endpoint(raw_point)
         is_object_snapped = False
         
         if snapped_p:
             final_point = QPointF(snapped_p) 
             is_object_snapped = True
-            self.acquired_point = QPointF(snapped_p) # 记忆参考点
+            self.acquired_point = QPointF(snapped_p)
             self.snap_marker.setPos(final_point)
             self.hud_snap_tip.setPos(final_point.x() + 8, final_point.y() + 8)
             self.snap_marker.show()
@@ -266,7 +218,6 @@ class CADGraphicsView(QGraphicsView):
             self.snap_marker.hide()
             self.hud_snap_tip.hide()
 
-        # 向当前工具索要参考点 (比如直线的起点，矩形的角点)
         ref_point = self.current_tool.get_reference_point()
         
         if not ref_point:
@@ -279,7 +230,6 @@ class CADGraphicsView(QGraphicsView):
             self.hud_polar_info.hide()
             return final_point, 0.0
 
-        # 2. 计算对象捕捉追踪与极轴追踪
         snap_x = final_point.x()
         snap_y = final_point.y()
         is_polar_h = is_polar_v = False
@@ -316,15 +266,12 @@ class CADGraphicsView(QGraphicsView):
             final_point.setX(snap_x)
             final_point.setY(snap_y)
 
-        # 3. 渲染全局 HUD 提示
         raw_length = math.hypot(final_point.x() - ref_point.x(), final_point.y() - ref_point.y())
-        if is_polar_h or is_polar_v:
-            snapped_angle = polar_angle
+        if is_polar_h or is_polar_v: snapped_angle = polar_angle
         else:
             raw_angle = math.degrees(math.atan2(-(final_point.y() - ref_point.y()), final_point.x() - ref_point.x()))
             snapped_angle = raw_angle if raw_angle >= 0 else raw_angle + 360
 
-        # 渲染极轴线
         if is_polar_h or is_polar_v:
             rad = math.radians(polar_angle)
             p_end_x = ref_point.x() + 10000 * math.cos(rad)
@@ -333,10 +280,8 @@ class CADGraphicsView(QGraphicsView):
             p_start_y = ref_point.y() + 10000 * math.sin(rad)
             self.polar_line.setLine(QLineF(p_start_x, p_start_y, p_end_x, p_end_y))
             self.polar_line.show()
-        else:
-            self.polar_line.hide()
+        else: self.polar_line.hide()
             
-        # 渲染虚拟交点十字追踪
         if is_track_h or is_track_v:
             m_x, m_y = self.acquired_point.x(), self.acquired_point.y()
             cross_size = 5.0 / self.transform().m11()
@@ -351,7 +296,6 @@ class CADGraphicsView(QGraphicsView):
             self.track_marker_h.hide()
             self.track_marker_v.hide()
 
-        # 渲染跟随鼠标文本面板
         tool_buffer = self.current_tool.get_input_buffer()
         display_length = tool_buffer if tool_buffer else f"{raw_length:.4f}"
         hud_bg_color = "#a0a0a0"
@@ -388,7 +332,6 @@ class CADGraphicsView(QGraphicsView):
             self.main_window.lbl_transform_info.setText(info_text)
 
         return final_point, snapped_angle
-    # ==========================================================
 
     def wheelEvent(self, event):
         zoom_in_factor = 1.15
@@ -397,7 +340,6 @@ class CADGraphicsView(QGraphicsView):
         else: zoom_factor = zoom_out_factor
         self.scale(zoom_factor, zoom_factor)
         
-        # 刷新画布和工具状态
         current_point = self.mapToScene(self.mapFromGlobal(self.cursor().pos()))
         final_point, snapped_angle = self._calculate_global_snap(current_point)
         self.current_tool.mouseMoveEvent(event, final_point, snapped_angle)
@@ -413,14 +355,12 @@ class CADGraphicsView(QGraphicsView):
         self.setFocus() 
         current_point = self.mapToScene(event.pos())
         
-        # 处理选中逻辑
         item = self.itemAt(event.pos())
         is_selectable = item and (item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
         if is_selectable and not self._get_snapped_endpoint(current_point):
             super().mousePressEvent(event)
             return
 
-        # 获取全局吸附坐标，然后传递给工具
         final_point, snapped_angle = self._calculate_global_snap(current_point)
         handled = self.current_tool.mousePressEvent(event, final_point, snapped_angle)
         if not handled:
@@ -479,6 +419,6 @@ class CADGraphicsView(QGraphicsView):
             
         handled = self.current_tool.keyPressEvent(event)
         if handled:
-            self._calculate_global_snap(self.last_cursor_point) # 键盘输入时强制刷新 HUD
+            self._calculate_global_snap(self.last_cursor_point) 
         else:
             super().keyPressEvent(event)

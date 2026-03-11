@@ -48,11 +48,13 @@ class LineTool(BaseTool):
     def finalize_current_line(self, end_point):
         if self.temp_line:
             self.temp_line.setLine(QLineF(self.start_point, end_point))
-            final_pen = QPen(QColor(255, 255, 255), 1)
+            
+            # 【核心修改】：通过颜色管理器动态赋予颜色
+            current_color = self.canvas.color_manager.get_color()
+            final_pen = QPen(current_color, 1)
             final_pen.setCosmetic(True)
             self.temp_line.setPen(final_pen)
             
-            # 绘制完成后，开启被选中和聚焦的权利
             self.temp_line.setFlags(
                 QGraphicsItem.GraphicsItemFlag.ItemIsSelectable |
                 QGraphicsItem.GraphicsItemFlag.ItemIsFocusable
@@ -63,7 +65,6 @@ class LineTool(BaseTool):
             
             self.start_point = end_point
             
-            # 创建新的预览线，显式清除标志位，防止它拦截鼠标导致无法确定下个点
             self.temp_line = CADLineItem(QLineF(self.start_point, self.start_point))
             self.temp_line.setFlags(QGraphicsItem.GraphicsItemFlag(0)) 
             pen = QPen(QColor(255, 255, 255), 1, Qt.PenStyle.DashLine) 
@@ -81,7 +82,6 @@ class LineTool(BaseTool):
                 self.start_point = final_point
                 
                 self.temp_line = CADLineItem(QLineF(self.start_point, self.start_point))
-                # 初始创建预览线时也禁止选中
                 self.temp_line.setFlags(QGraphicsItem.GraphicsItemFlag(0)) 
                 pen = QPen(QColor(255, 255, 255), 1, Qt.PenStyle.DashLine) 
                 pen.setCosmetic(True)
