@@ -4,7 +4,6 @@ from PyQt6.QtCore import Qt, QLineF, QPointF, QRectF
 from PyQt6.QtGui import QPen, QColor, QPainter, QKeyEvent, QUndoStack, QUndoCommand, QKeySequence, QBrush
 import math
 
-# 引入刚刚新建的颜色管理器
 from managers.color_manager import ColorManager
 from tools.tool_select import SelectTool
 from tools.tool_line import LineTool
@@ -29,7 +28,6 @@ class CADGraphicsView(QGraphicsView):
         super().__init__(scene)
         self.main_window = main_window
         
-        # 【核心修复】：必须在任何工具或外部 UI 调用前，先初始化颜色管家
         self.color_manager = ColorManager()
         
         self.setMouseTracking(True)
@@ -37,10 +35,12 @@ class CADGraphicsView(QGraphicsView):
         self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.setStyleSheet("background-color: transparent;")
         self.setBackgroundBrush(QColor("#222222"))
-        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        
+        # 禁用默认锚点，防止场景动态扩大时锚点偏移
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
         
         self.undo_stack = QUndoStack(self)
-       
         
         self._is_panning = False
         self._pan_start_pos = None
@@ -127,8 +127,6 @@ class CADGraphicsView(QGraphicsView):
         self.hud_length.hide()
         self.hud_angle.hide()
         self.hud_polar_info.hide()
-
- 
 
     def drawBackground(self, painter, rect):
         super().drawBackground(painter, rect)
@@ -336,13 +334,26 @@ class CADGraphicsView(QGraphicsView):
     def wheelEvent(self, event):
         zoom_in_factor = 1.15
         zoom_out_factor = 1.0 / zoom_in_factor
-        if event.angleDelta().y() > 0: zoom_factor = zoom_in_factor
-        else: zoom_factor = zoom_out_factor
+        zoom_factor = zoom_in_factor if event.angleDelta().y() > 0 else zoom_out_factor
+        
+        # 手动接管坐标缩放与平移
+        mouse_pos = event.position().toPoint()
+        old_scene_pos = self.mapToScene(mouse_pos)
+        
         self.scale(zoom_factor, zoom_factor)
         
-        current_point = self.mapToScene(self.mapFromGlobal(self.cursor().pos()))
+        new_scene_pos = self.mapToScene(mouse_pos)
+        delta = new_scene_pos - old_scene_pos
+        self.translate(delta.x(), delta.y())
+        
+        # 刷新画布和工具状态
+        current_point = self.mapToScene(mouse_pos)
         final_point, snapped_angle = self._calculate_global_snap(current_point)
-        self.current_tool.mouseMoveEvent(event, final_point, snapped_angle)
+        
+        class DummyEvent:
+            def pos(self): return mouse_pos
+            
+        self.current_tool.mouseMoveEvent(DummyEvent(), final_point, snapped_angle)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
@@ -419,6 +430,6 @@ class CADGraphicsView(QGraphicsView):
             
         handled = self.current_tool.keyPressEvent(event)
         if handled:
-            self._calculate_global_snap(self.last_cursor_point) 
+            self._calculate_global_snap(self.last_cursor_point)
         else:
             super().keyPressEvent(event)
