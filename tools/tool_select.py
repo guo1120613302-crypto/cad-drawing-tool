@@ -1,15 +1,14 @@
 # tools/tool_select.py
 from tools.base_tool import BaseTool
-from PyQt6.QtWidgets import QGraphicsRectItem, QGraphicsItem
+from PyQt6.QtWidgets import QGraphicsRectItem, QGraphicsItem, QGraphicsLineItem
 from PyQt6.QtCore import Qt, QRectF, QLineF, QPointF
 from PyQt6.QtGui import QPen, QColor, QBrush, QUndoCommand
 import math
 
 class CommandModifyMultipleLines(QUndoCommand):
-    """支持多实体同步拉伸的撤销/重做命令"""
     def __init__(self, stretch_data):
         super().__init__()
-        self.stretch_data = stretch_data # 格式: [(item, old_line, new_line), ...]
+        self.stretch_data = stretch_data 
     def redo(self):
         for item, _, new_line in self.stretch_data:
             if item.scene(): item.setLine(new_line)
@@ -23,14 +22,13 @@ class SelectTool(BaseTool):
         self.start_point = None
         self.selection_box = None
         
-        # 多点同步拉伸状态
         self.is_stretching = False
-        self.stretch_items = [] # 存储: {'item': item, 'index': grip_index, 'old_line': line}
+        self.stretch_items = [] 
+        self.rubber_bands = [] # 【新增】：存储橡皮筋参考线
         self.stretch_start_pos = None
         self.input_buffer = ""
 
     def get_reference_point(self):
-        """拉伸时，以第一条线的固定端作为极轴参考"""
         if self.is_stretching and self.stretch_items:
             data = self.stretch_items[0]
             line = data['old_line']
@@ -47,14 +45,25 @@ class SelectTool(BaseTool):
         self.canvas.viewport().setCursor(Qt.CursorShape.ArrowCursor)
 
     def deactivate(self):
-        self._cleanup_box()
-        self.canvas.scene().clearSelection()
+        self._cleanup_all()
 
     def _cleanup_box(self):
         if self.selection_box:
             self.canvas.scene().removeItem(self.selection_box)
             self.selection_box = None
         self.start_point = None
+
+    def _cleanup_rubber_bands(self):
+        """【新增】：清理残留的橡皮筋参考线"""
+        for rb in self.rubber_bands:
+            if rb.scene():
+                self.canvas.scene().removeItem(rb)
+        self.rubber_bands = []
+
+    def _cleanup_all(self):
+        self._cleanup_box()
+        self._cleanup_rubber_bands()
+        self.canvas.scene().clearSelection()
 
     def mousePressEvent(self, event, final_point, snapped_angle):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -65,7 +74,6 @@ class SelectTool(BaseTool):
             self.input_buffer = "" 
             raw_point = self.canvas.mapToScene(event.pos())
             
-            # --- 核心改进：搜寻所有重合的夹点 ---
             selected_items = self.canvas.scene().selectedItems()
             if selected_items:
                 hit_radius = 12.0 / self.canvas.transform().m11()
@@ -86,10 +94,21 @@ class SelectTool(BaseTool):
                     self.is_stretching = True
                     self.stretch_items = found_grips
                     self.stretch_start_pos = raw_point
+                    
+                    # 【核心新增】：创建橡皮筋引导线
+                    self._cleanup_rubber_bands()
+                    rb_pen = QPen(QColor(150, 150, 150, 150), 1, Qt.PenStyle.DashLine)
+                    rb_pen.setCosmetic(True)
+                    for data in found_grips:
+                        rb_line = QGraphicsLineItem(data['old_line'])
+                        rb_line.setPen(rb_pen)
+                        rb_line.setZValue(50) # 置于底层
+                        self.canvas.scene().addItem(rb_line)
+                        self.rubber_bands.append(rb_line)
+                        
                     self.canvas.viewport().update()
                     return True
             
-            # 框选逻辑
             self.start_point = raw_point
             if not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
                 self.canvas.scene().clearSelection()
@@ -103,10 +122,7 @@ class SelectTool(BaseTool):
         if self.is_stretching and self.stretch_items:
             if not self.input_buffer:
                 for data in self.stretch_items:
-                    item = data['item']
-                    idx = data['index']
-                    old = data['old_line']
-                    
+                    item, idx, old = data['item'], data['index'], data['old_line']
                     if idx == 0: item.setLine(QLineF(final_point, old.p2()))
                     elif idx == 2: item.setLine(QLineF(old.p1(), final_point))
                     elif idx == 1:
@@ -115,7 +131,6 @@ class SelectTool(BaseTool):
             self.canvas.viewport().update()
             return True
 
-        # 框选预览
         if self.start_point and self.selection_box:
             raw_point = self.canvas.mapToScene(event.pos())
             x, y = min(self.start_point.x(), raw_point.x()), min(self.start_point.y(), raw_point.y())
@@ -131,7 +146,7 @@ class SelectTool(BaseTool):
 
     def mouseReleaseEvent(self, event, final_point, snapped_angle):
         if event.button() == Qt.MouseButton.LeftButton and self.is_stretching:
-            return True # 保持拉伸，等待回车或再次点击
+            return True 
         
         if event.button() == Qt.MouseButton.LeftButton and self.start_point and self.selection_box:
             raw_point = self.canvas.mapToScene(event.pos())
@@ -168,6 +183,7 @@ class SelectTool(BaseTool):
                     data['item'].hot_grip_index = -1
                 self.is_stretching = False
                 self.stretch_items = []
+                self._cleanup_rubber_bands() # 取消时也清理
                 self.input_buffer = ""
                 self.canvas._cleanup_tracking_huds()
                 return True
@@ -175,7 +191,6 @@ class SelectTool(BaseTool):
 
     def _apply_stretch_by_dist(self, distance):
         if not self.stretch_items: return
-        # 以第一个点为准计算角度
         ref_data = self.stretch_items[0]
         anchor = ref_data['old_line'].p2() if ref_data['index'] == 0 else ref_data['old_line'].p1()
         _, current_angle = self.canvas._calculate_global_snap(self.canvas.last_cursor_point)
@@ -198,6 +213,7 @@ class SelectTool(BaseTool):
             self.canvas.undo_stack.push(CommandModifyMultipleLines(stretch_data))
         self.is_stretching = False
         self.stretch_items = []
+        self._cleanup_rubber_bands() # 结算后清理
         self.input_buffer = ""
         self.canvas._cleanup_tracking_huds()
         self.canvas.viewport().update()
