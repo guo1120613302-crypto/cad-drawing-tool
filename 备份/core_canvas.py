@@ -4,9 +4,6 @@ from PyQt6.QtCore import Qt, QLineF, QPointF
 from PyQt6.QtGui import QPen, QColor, QPainter, QKeyEvent, QUndoStack, QUndoCommand, QKeySequence
 import math
 
-from PyQt6.QtCore import Qt, QLineF, QPointF, QRectF  # 加上 QRectF
-from PyQt6.QtGui import QPen, QColor, QPainter, QKeyEvent, QUndoStack, QUndoCommand, QKeySequence, QBrush # 加上 QBrush
-
 from tools.tool_select import SelectTool
 from tools.tool_line import LineTool
 
@@ -62,30 +59,6 @@ class CADGraphicsView(QGraphicsView):
                 action.triggered.connect(lambda checked, name=action.text(): self.switch_tool(name))
         
         
-    def drawForeground(self, painter, rect):
-        """【全局夹点渲染引擎】：统一接管所有被选中对象的夹点绘制"""
-        super().drawForeground(painter, rect)
-        
-        selected_items = self.scene().selectedItems()
-        if not selected_items:
-            return
-            
-        # 计算缩放比，确保夹点在屏幕上永远是固定大小 (8x8 像素)
-        lod = self.transform().m11()
-        if lod <= 0: return
-        grip_size = 8.0 / lod
-        half_size = grip_size / 2.0
-        
-        # CAD 经典蓝色夹点样式，带纯白极细边框
-        painter.setBrush(QBrush(QColor(0, 120, 215)))
-        painter.setPen(QPen(QColor(255, 255, 255), 1.0 / lod))
-        
-        # 遍历所有被选中的对象，只要它有 get_grips 方法，就统一画上夹点
-        for item in selected_items:
-            if hasattr(item, 'get_grips'):
-                for p in item.get_grips():
-                    painter.drawRect(QRectF(p.x() - half_size, p.y() - half_size, grip_size, grip_size))
-
 
     def _init_global_ui_components(self):
         self.polar_line = QGraphicsLineItem()
@@ -196,37 +169,7 @@ class CADGraphicsView(QGraphicsView):
         pen_major.setCosmetic(True)
         painter.setPen(pen_major)
         painter.drawLines(major_lines)
-        
-    def drawForeground(self, painter, rect):
-        from PyQt6.QtCore import QRectF
-        from PyQt6.QtGui import QBrush, QColor, QPen
-        super().drawForeground(painter, rect)
-        
-        selected_items = self.scene().selectedItems()
-        if not selected_items:
-            return
-            
-        lod = self.transform().m11()
-        if lod <= 0: return
-        grip_size = 8.0 / lod
-        half_size = grip_size / 2.0
-        
-        pen = QPen(QColor(255, 255, 255), 1.0 / lod)
-        pen.setCosmetic(True)
-        painter.setPen(pen)
-        
-        for item in selected_items:
-            if hasattr(item, 'get_grips'):
-                # 侦测这个实体当前有没有热点 (被捏住的点)
-                hot_idx = getattr(item, 'hot_grip_index', -1)
-                for i, p in enumerate(item.get_grips()):
-                    if i == hot_idx:
-                        # 热夹点：纯红色
-                        painter.setBrush(QBrush(QColor(255, 0, 0))) 
-                    else:
-                        # 默认夹点：CAD蓝
-                        painter.setBrush(QBrush(QColor(0, 120, 215))) 
-                    painter.drawRect(QRectF(p.x() - half_size, p.y() - half_size, grip_size, grip_size))
+
     def _get_snapped_endpoint(self, raw_point):
         snap_threshold = 10.0 / self.transform().m11() 
         closest_dist = float('inf')
