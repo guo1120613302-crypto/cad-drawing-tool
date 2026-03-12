@@ -85,8 +85,8 @@ def create_left_toolbox(main_window):
     toolbox.setMovable(False)
     toolbox.setIconSize(QSize(32, 32))
     
-    # 暂时只挂载 V2.0 已完成的三个核心工具
-    tool_definitions = ["选择", "直线", "矩形", "偏移", "移动"]
+    # 暂时只挂载 V2.0 已完成的核心工具
+    tool_definitions = ["选择", "直线", "矩形", "偏移"]
 
     for tool_name in tool_definitions:
         icon = generate_cad_style_icon(tool_name)

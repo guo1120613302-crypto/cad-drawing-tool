@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import QGraphicsRectItem, QGraphicsItem, QGraphicsLineItem,
 from PyQt6.QtCore import Qt, QPointF, QLineF
 from PyQt6.QtGui import QPen, QColor, QBrush, QUndoCommand, QPolygonF
 import math
+import traceback
 from utils.geom_engine import GeometryEngine
 
 class CommandModifyMultipleGeom(QUndoCommand):
@@ -20,6 +21,17 @@ class CommandModifyMultipleGeom(QUndoCommand):
             if item.scene(): 
                 item.set_coords(old_coords)
 
+class CommandMoveGeom(QUndoCommand):
+    def __init__(self, move_data):
+        super().__init__()
+        self.move_data = move_data  # 格式: [(item, old_coords, new_coords)]
+    def redo(self):
+        for item, _, new_c in self.move_data:
+            if item.scene(): item.set_coords(new_c)
+    def undo(self):
+        for item, old_c, _ in self.move_data:
+            if item.scene(): item.set_coords(old_c)
+
 class SelectTool(BaseTool):
     def __init__(self, canvas):
         super().__init__(canvas)
@@ -29,6 +41,11 @@ class SelectTool(BaseTool):
         self.is_stretching = False
         self.stretch_items = [] 
         self.stretch_start_pos = None 
+        
+        # 移动模式相关
+        self.is_moving = False
+        self.move_items = []
+        self.move_start_pos = None
         
         # --- 修复：支持多物体并发拉伸的幽灵数组 ---
         self.ghost_items = [] 
@@ -53,6 +70,11 @@ class SelectTool(BaseTool):
         self.is_stretching = False
         self.stretch_items = []
         self.stretch_start_pos = None
+        
+        self.is_moving = False
+        self.move_items = []
+        self.move_start_pos = None
+        
         self.input_buffer = ""
 
     def activate(self):
@@ -67,7 +89,11 @@ class SelectTool(BaseTool):
             self.canvas.scene().clearSelection()
 
     def get_reference_point(self):
-        return self.stretch_start_pos if self.is_stretching else None
+        if self.is_stretching:
+            return self.stretch_start_pos
+        elif self.is_moving:
+            return self.move_start_pos
+        return None
 
     def get_input_buffer(self): return self.input_buffer
 
@@ -75,9 +101,14 @@ class SelectTool(BaseTool):
         if event.button() == Qt.MouseButton.MiddleButton: return False
 
         if event.button() == Qt.MouseButton.LeftButton:
+            # 如果正在拉伸，完成拉伸
             if self.is_stretching:
-                # 修复：安全传递坐标，避免游标迷失
                 self._finalize_stretch(final_point) 
+                return True
+            
+            # 如果正在移动，完成移动
+            if self.is_moving:
+                self._finalize_move(final_point)
                 return True
 
             self.input_buffer = "" 
@@ -85,7 +116,8 @@ class SelectTool(BaseTool):
             
             selected_items = self.canvas.scene().selectedItems()
             if selected_items:
-                hit_radius = 12.0 / self.canvas.transform().m11()
+                # 增加夹点的点击判定半径，从 12 增加到 15 像素
+                hit_radius = 15.0 / self.canvas.transform().m11()
                 found_grips = []
                 
                 for item in selected_items:
@@ -102,6 +134,7 @@ class SelectTool(BaseTool):
                                 item.hot_grip_index = i 
 
                 if found_grips:
+                    # 点击到夹点，进入拉伸模式
                     self.is_stretching = True
                     self.stretch_items = found_grips
                     
@@ -137,6 +170,39 @@ class SelectTool(BaseTool):
                             self.ghost_items.append({'ghost': ghost, 'data': item_data})
                             
                     return True
+                
+                # 没有点击到夹点，检查是否点击到选中的对象本身（进入移动模式）
+                clicked_item = self.canvas.scene().itemAt(raw_point, self.canvas.transform())
+                if isinstance(clicked_item, (SmartLineItem, SmartPolygonItem)) and clicked_item.isSelected():
+                    # 进入移动模式
+                    self.is_moving = True
+                    self.move_items = [item for item in selected_items if isinstance(item, (SmartLineItem, SmartPolygonItem))]
+                    self.move_start_pos = final_point
+                    
+                    # 创建移动预览幽灵
+                    pen = QPen(QColor(0, 255, 255, 150), 1, Qt.PenStyle.DashLine)
+                    pen.setCosmetic(True)
+                    self.ghost_items = []
+                    self.original_affected_items = []
+                    
+                    for item in self.move_items:
+                        item.hide()
+                        self.original_affected_items.append(item)
+                        
+                        if isinstance(item, SmartLineItem):
+                            ghost = QGraphicsLineItem(item.line())
+                            ghost.setPen(pen)
+                            ghost.setZValue(10000)
+                            self.canvas.scene().addItem(ghost)
+                            self.ghost_items.append({'ghost': ghost, 'item': item, 'type': 'line'})
+                        else:
+                            ghost = QGraphicsPolygonItem(item.polygon())
+                            ghost.setPen(pen)
+                            ghost.setZValue(10000)
+                            self.canvas.scene().addItem(ghost)
+                            self.ghost_items.append({'ghost': ghost, 'item': item, 'type': 'poly'})
+                    
+                    return True
             
             self.start_point = raw_point
             if not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
@@ -151,7 +217,7 @@ class SelectTool(BaseTool):
             return True
             
         elif event.button() == Qt.MouseButton.RightButton:
-            if self.is_stretching:
+            if self.is_stretching or self.is_moving:
                 self._cleanup_temp_items()
                 if hasattr(self.canvas, '_cleanup_tracking_huds'):
                     self.canvas._cleanup_tracking_huds()
@@ -161,6 +227,35 @@ class SelectTool(BaseTool):
         return False
 
     def mouseMoveEvent(self, event, final_point, snapped_angle):
+        # 移动模式预览
+        if self.is_moving and self.move_items:
+            try:
+                dx = final_point.x() - self.move_start_pos.x()
+                dy = final_point.y() - self.move_start_pos.y()
+                
+                for ghost_dict in self.ghost_items:
+                    ghost = ghost_dict['ghost']
+                    item = ghost_dict['item']
+                    g_type = ghost_dict['type']
+                    
+                    if g_type == 'line':
+                        old_c = item.coords
+                        new_x1, new_y1 = old_c[0][0] + dx, old_c[0][1] + dy
+                        new_x2, new_y2 = old_c[1][0] + dx, old_c[1][1] + dy
+                        ghost.setLine(QLineF(new_x1, new_y1, new_x2, new_y2))
+                    elif g_type == 'poly':
+                        old_c = item.coords
+                        poly_f = QPolygonF()
+                        for x, y in old_c:
+                            poly_f.append(QPointF(x + dx, y + dy))
+                        ghost.setPolygon(poly_f)
+                
+                self.canvas.viewport().update()
+            except Exception as e:
+                print("【移动预览拦截】:", e)
+            return True
+        
+        # 拉伸模式预览
         if self.is_stretching and self.stretch_items:
             dx = final_point.x() - self.stretch_start_pos.x()
             dy = final_point.y() - self.stretch_start_pos.y()
@@ -214,7 +309,7 @@ class SelectTool(BaseTool):
         return False
 
     def mouseReleaseEvent(self, event, final_point, snapped_angle):
-        if event.button() == Qt.MouseButton.LeftButton and self.is_stretching:
+        if event.button() == Qt.MouseButton.LeftButton and (self.is_stretching or self.is_moving):
             return True 
         
         if event.button() == Qt.MouseButton.LeftButton and self.start_point and self.selection_box:
@@ -232,7 +327,7 @@ class SelectTool(BaseTool):
         return False
 
     def keyPressEvent(self, event):
-        if self.is_stretching:
+        if self.is_stretching or self.is_moving:
             key = event.text()
             if key.isdigit() or key in ['.', '-']:
                 self.input_buffer += key
@@ -244,7 +339,8 @@ class SelectTool(BaseTool):
                 if self.input_buffer:
                     try:
                         dist = float(self.input_buffer)
-                        sx, sy = self.stretch_start_pos.x(), self.stretch_start_pos.y()
+                        ref_pos = self.stretch_start_pos if self.is_stretching else self.move_start_pos
+                        sx, sy = ref_pos.x(), ref_pos.y()
                         
                         hud_info = self.canvas.hud_polar_info.toPlainText() if self.canvas.hud_polar_info else ""
                         current_angle = 0.0
@@ -258,10 +354,17 @@ class SelectTool(BaseTool):
                         new_x = sx + dist * math.cos(rad)
                         new_y = sy - dist * math.sin(rad)
                         
-                        self._finalize_stretch(QPointF(new_x, new_y))
+                        if self.is_stretching:
+                            self._finalize_stretch(QPointF(new_x, new_y))
+                        elif self.is_moving:
+                            self._finalize_move(QPointF(new_x, new_y))
                     except (ValueError, EOFError): pass
-                else: 
-                    self._finalize_stretch()
+                else:
+                    if self.is_stretching:
+                        self._finalize_stretch()
+                    elif self.is_moving:
+                        safe_point = getattr(self.canvas, 'last_cursor_point', QPointF(0,0))
+                        self._finalize_move(safe_point)
                 return True
             elif event.key() == Qt.Key.Key_Escape:
                 self._cleanup_temp_items()
@@ -330,3 +433,30 @@ class SelectTool(BaseTool):
         if hasattr(self.canvas, '_cleanup_tracking_huds'):
             self.canvas._cleanup_tracking_huds()
         self.canvas.viewport().update()
+
+    def _finalize_move(self, final_point):
+        """完成移动操作"""
+        try:
+            if not self.move_items or not self.move_start_pos:
+                return
+            
+            dx = final_point.x() - self.move_start_pos.x()
+            dy = final_point.y() - self.move_start_pos.y()
+            
+            move_data = []
+            for item in self.move_items:
+                old_c = list(item.coords)
+                new_c = [(x + dx, y + dy) for x, y in old_c]
+                move_data.append((item, old_c, new_c))
+            
+            if move_data:
+                self.canvas.undo_stack.push(CommandMoveGeom(move_data))
+            
+            self._cleanup_temp_items()
+            
+            if hasattr(self.canvas, '_cleanup_tracking_huds'):
+                self.canvas._cleanup_tracking_huds()
+            self.canvas.viewport().update()
+        except Exception as e:
+            print("【执行移动拦截】:", e)
+            traceback.print_exc()

@@ -42,9 +42,9 @@ class SmartLineItem(QGraphicsLineItem):
         super().hoverLeaveEvent(event)
 
     def shape(self):
-        # 增加鼠标点击的判定粗细，不用非得点中那 1 像素
+        # 增加鼠标点击的判定粗细，从 10 增加到 20 像素，更容易选中
         stroker = QPainterPathStroker()
-        stroker.setWidth(10.0) 
+        stroker.setWidth(20.0) 
         return stroker.createStroke(super().shape())
 
     def paint(self, painter, option, widget=None):
@@ -104,8 +104,9 @@ class SmartPolygonItem(QGraphicsPolygonItem):
         super().hoverLeaveEvent(event)
 
     def shape(self):
+        # 增加鼠标点击的判定粗细，从 10 增加到 20 像素
         stroker = QPainterPathStroker()
-        stroker.setWidth(10.0)
+        stroker.setWidth(20.0)
         return stroker.createStroke(super().shape())
 
     def paint(self, painter, option, widget=None):

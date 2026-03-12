@@ -8,7 +8,6 @@ import traceback  # 引入全局防崩溃追踪
 from utils.geom_engine import GeometryEngine
 from core.core_items import SmartLineItem, SmartPolygonItem
 from managers.color_manager import ColorManager
-from tools.tool_move import MoveTool
 
 # 导入 V2.0 重写后的工具
 from tools.tool_select import SelectTool
@@ -45,8 +44,7 @@ class CADGraphicsView(QGraphicsView):
             "选择": SelectTool(self),
             "直线": LineTool(self),
             "矩形": RectTool(self),
-            "偏移": OffsetTool(self),
-            "移动": MoveTool(self)
+            "偏移": OffsetTool(self)
         }
         self.current_tool = self.tools["直线"]
         self.current_tool.activate()
