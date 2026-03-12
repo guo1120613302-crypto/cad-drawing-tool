@@ -3,15 +3,18 @@ from PyQt6.QtWidgets import QGraphicsView, QGraphicsLineItem, QGraphicsTextItem,
 from PyQt6.QtCore import Qt, QLineF, QPointF, QRectF
 from PyQt6.QtGui import QPen, QColor, QPainter, QKeyEvent, QUndoStack, QUndoCommand, QKeySequence, QBrush
 import math
+import traceback  # 引入全局防崩溃追踪
 
 from utils.geom_engine import GeometryEngine
 from core.core_items import SmartLineItem, SmartPolygonItem
 from managers.color_manager import ColorManager
+from tools.tool_move import MoveTool
 
 # 导入 V2.0 重写后的工具
 from tools.tool_select import SelectTool
 from tools.tool_line import LineTool
 from tools.tool_rect import RectTool
+from tools.tool_offset import OffsetTool
 
 class CADGraphicsView(QGraphicsView):
     def __init__(self, scene, main_window):
@@ -41,7 +44,9 @@ class CADGraphicsView(QGraphicsView):
         self.tools = {
             "选择": SelectTool(self),
             "直线": LineTool(self),
-            "矩形": RectTool(self)
+            "矩形": RectTool(self),
+            "偏移": OffsetTool(self),
+            "移动": MoveTool(self)
         }
         self.current_tool = self.tools["直线"]
         self.current_tool.activate()
@@ -156,8 +161,16 @@ class CADGraphicsView(QGraphicsView):
             
         lod = self.transform().m11()
         if lod <= 0: return
-        grip_size = 8.0 / lod
+        
+        # --- 修复：默认夹点尺寸调整 ---
+        # Image 3 里默认蓝方块太大了，我们缩到 6 像素。
+        grip_size = 6.0 / lod 
         half_size = grip_size / 2.0
+        
+        # --- 修复：拉伸激活点的尺寸独立化 ---
+        # 创建一个 tiny dot 的尺寸，仿 CAD 效果。
+        hot_grip_size = 2.0 / lod # 极小的精准点，不遮挡
+        half_hot_size = hot_grip_size / 2.0
         
         pen = QPen(QColor(255, 255, 255), 1.0 / lod)
         pen.setCosmetic(True)
@@ -167,9 +180,14 @@ class CADGraphicsView(QGraphicsView):
             if isinstance(item, (SmartLineItem, SmartPolygonItem)):
                 hot_idx = getattr(item, 'hot_grip_index', -1)
                 for i, (gx, gy) in enumerate(item.get_grips()):
-                    if i == hot_idx: painter.setBrush(QBrush(QColor(255, 0, 0))) 
-                    else: painter.setBrush(QBrush(QColor(0, 120, 215))) 
-                    painter.drawRect(QRectF(gx - half_size, gy - half_size, grip_size, grip_size))
+                    if i == hot_idx:
+                        # 【V2.0 修复】：如果是被激活的点，绘制一个 tiny red point
+                        painter.setBrush(QBrush(QColor(255, 0, 0)))
+                        painter.drawRect(QRectF(gx - half_hot_size, gy - half_hot_size, hot_grip_size, hot_grip_size))
+                    else:
+                        # 默认的蓝色未命中点，缩小到 grip_size (6 像素)
+                        painter.setBrush(QBrush(QColor(0, 120, 215))) 
+                        painter.drawRect(QRectF(gx - half_size, gy - half_size, grip_size, grip_size))
 
     def _get_snapped_endpoint(self, raw_point):
         """【V2.0 核心引擎】：全局交点与夹点捕捉"""
@@ -356,115 +374,135 @@ class CADGraphicsView(QGraphicsView):
 
         return final_point, snapped_angle
 
-    # ================= 鼠标与键盘事件分发 =================
+    # ================= 鼠标与键盘事件分发 (全局防火墙) =================
     def wheelEvent(self, event):
-        zoom_in_factor = 1.15
-        zoom_out_factor = 1.0 / zoom_in_factor
-        zoom_factor = zoom_in_factor if event.angleDelta().y() > 0 else zoom_out_factor
-        mouse_pos = event.position().toPoint()
-        old_scene_pos = self.mapToScene(mouse_pos)
-        
-        self.scale(zoom_factor, zoom_factor)
-        new_scene_pos = self.mapToScene(mouse_pos)
-        delta = new_scene_pos - old_scene_pos
-        self.translate(delta.x(), delta.y())
-        
-        current_point = self.mapToScene(mouse_pos)
-        final_point, snapped_angle = self._calculate_global_snap(current_point)
-        
-        class DummyEvent:
-            def pos(self): return mouse_pos
-        if self.current_tool:
-            self.current_tool.mouseMoveEvent(DummyEvent(), final_point, snapped_angle)
+        try:
+            zoom_in_factor = 1.15
+            zoom_out_factor = 1.0 / zoom_in_factor
+            zoom_factor = zoom_in_factor if event.angleDelta().y() > 0 else zoom_out_factor
+            mouse_pos = event.position().toPoint()
+            old_scene_pos = self.mapToScene(mouse_pos)
+            
+            self.scale(zoom_factor, zoom_factor)
+            new_scene_pos = self.mapToScene(mouse_pos)
+            delta = new_scene_pos - old_scene_pos
+            self.translate(delta.x(), delta.y())
+            
+            current_point = self.mapToScene(mouse_pos)
+            final_point, snapped_angle = self._calculate_global_snap(current_point)
+            
+            class DummyEvent:
+                def pos(self): return mouse_pos
+            if self.current_tool:
+                self.current_tool.mouseMoveEvent(DummyEvent(), final_point, snapped_angle)
+        except Exception as e:
+            print(f"【系统级防火墙】拦截到滚轮缩放崩溃: {e}")
+            traceback.print_exc()
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.MiddleButton:
-            self._is_panning = True
-            self._pan_start_pos = event.pos()
-            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
-            event.accept()
-            return
+        try:
+            if event.button() == Qt.MouseButton.MiddleButton:
+                self._is_panning = True
+                self._pan_start_pos = event.pos()
+                self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+                event.accept()
+                return
+                
+            self.setFocus() 
+            current_point = self.mapToScene(event.pos())
+            final_point, snapped_angle = self._calculate_global_snap(current_point)
             
-        self.setFocus() 
-        current_point = self.mapToScene(event.pos())
-        final_point, snapped_angle = self._calculate_global_snap(current_point)
-        
-        handled = False
-        if self.current_tool:
-            handled = self.current_tool.mousePressEvent(event, final_point, snapped_angle)
-            
-        if not handled:
-            super().mousePressEvent(event)
+            handled = False
+            if self.current_tool:
+                handled = self.current_tool.mousePressEvent(event, final_point, snapped_angle)
+                
+            if not handled:
+                super().mousePressEvent(event)
+        except Exception as e:
+            print(f"【系统级防火墙】拦截到鼠标按下崩溃: {e}")
+            traceback.print_exc()
 
     def mouseMoveEvent(self, event):
-        if self._is_panning and self._pan_start_pos is not None:
-            delta = event.pos() - self._pan_start_pos
-            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
-            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
-            self._pan_start_pos = event.pos()
-            event.accept()
-            return
+        try:
+            if self._is_panning and self._pan_start_pos is not None:
+                delta = event.pos() - self._pan_start_pos
+                self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
+                self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+                self._pan_start_pos = event.pos()
+                event.accept()
+                return
 
-        self.last_cursor_point = self.mapToScene(event.pos())
-        final_point, snapped_angle = self._calculate_global_snap(self.last_cursor_point)
-        
-        handled = False
-        if self.current_tool:
-            handled = self.current_tool.mouseMoveEvent(event, final_point, snapped_angle)
+            self.last_cursor_point = self.mapToScene(event.pos())
+            final_point, snapped_angle = self._calculate_global_snap(self.last_cursor_point)
             
-        if not handled:
-            super().mouseMoveEvent(event)
+            handled = False
+            if self.current_tool:
+                handled = self.current_tool.mouseMoveEvent(event, final_point, snapped_angle)
+                
+            if not handled:
+                super().mouseMoveEvent(event)
+        except Exception as e:
+            print(f"【系统级防火墙】拦截到鼠标移动崩溃: {e}")
+            traceback.print_exc()
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.MiddleButton:
-            self._is_panning = False
-            if self.current_tool: 
-                self.current_tool.activate() 
-            event.accept()
-            return
+        try:
+            if event.button() == Qt.MouseButton.MiddleButton:
+                self._is_panning = False
+                if self.current_tool: 
+                    self.current_tool.activate() 
+                event.accept()
+                return
+                
+            final_point, snapped_angle = self._calculate_global_snap(self.mapToScene(event.pos()))
             
-        final_point, snapped_angle = self._calculate_global_snap(self.mapToScene(event.pos()))
-        
-        handled = False
-        if self.current_tool:
-            handled = self.current_tool.mouseReleaseEvent(event, final_point, snapped_angle)
-            
-        if not handled:
-            super().mouseReleaseEvent(event)
+            handled = False
+            if self.current_tool:
+                handled = self.current_tool.mouseReleaseEvent(event, final_point, snapped_angle)
+                
+            if not handled:
+                super().mouseReleaseEvent(event)
+        except Exception as e:
+            print(f"【系统级防火墙】拦截到鼠标释放崩溃: {e}")
+            traceback.print_exc()
 
     def keyPressEvent(self, event: QKeyEvent):
-        if event.matches(QKeySequence.StandardKey.Undo):
-            self.undo_stack.undo()
-            self.scene().clearSelection()
-            self._calculate_global_snap(self.last_cursor_point)
-            return
-        elif event.matches(QKeySequence.StandardKey.Redo):
-            self.undo_stack.redo()
-            self.scene().clearSelection()
-            self._calculate_global_snap(self.last_cursor_point)
-            return
-        elif event.matches(QKeySequence.StandardKey.SelectAll):
-            for item in self.scene().items():
-                if item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsSelectable:
-                    item.setSelected(True)
-            return
-        elif event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-            # 防止在画线过程中误删图形
-            if self.current_tool and not self.current_tool.get_reference_point():
-                selected = self.scene().selectedItems()
-                if selected:
-                    # 对于 V2.0，暂时用直接删除。后续可引入 V2.0 专用的 CommandDeleteGeom
-                    for item in selected:
-                        if item in self.scene().items():
-                            item.setSelected(False)
-                            self.scene().removeItem(item)
-                    return
-            
-        handled = False
-        if self.current_tool:
-            handled = self.current_tool.keyPressEvent(event)
-            
-        if handled:
-            self._calculate_global_snap(self.last_cursor_point)
-        else:
-            super().keyPressEvent(event)
+        try:
+            if event.matches(QKeySequence.StandardKey.Undo):
+                self.undo_stack.undo()
+                self.scene().clearSelection()
+                self._calculate_global_snap(self.last_cursor_point)
+                return
+            elif event.matches(QKeySequence.StandardKey.Redo):
+                self.undo_stack.redo()
+                self.scene().clearSelection()
+                self._calculate_global_snap(self.last_cursor_point)
+                return
+            elif event.matches(QKeySequence.StandardKey.SelectAll):
+                for item in self.scene().items():
+                    if item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsSelectable:
+                        item.setSelected(True)
+                return
+            elif event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                # 防止在画线过程中误删图形
+                if self.current_tool and not self.current_tool.get_reference_point():
+                    selected = self.scene().selectedItems()
+                    if selected:
+                        # 对于 V2.0，暂时用直接删除。后续可引入 V2.0 专用的 CommandDeleteGeom
+                        for item in selected:
+                            if item in self.scene().items():
+                                item.setSelected(False)
+                                self.scene().removeItem(item)
+                        return
+                
+            handled = False
+            if self.current_tool:
+                handled = self.current_tool.keyPressEvent(event)
+                
+            if handled:
+                self._calculate_global_snap(self.last_cursor_point)
+            else:
+                super().keyPressEvent(event)
+        except Exception as e:
+            print(f"【系统级防火墙】拦截到键盘敲击崩溃: {e}")
+            traceback.print_exc()

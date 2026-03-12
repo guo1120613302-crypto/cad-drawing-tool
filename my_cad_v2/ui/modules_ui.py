@@ -36,6 +36,25 @@ def generate_cad_style_icon(tool_type):
         painter.drawLine(ix, iy, ix, iy+14)
         painter.drawLine(ix+10, iy+10, ix+iw, iy+10)
         painter.drawLine(ix+10, iy+10, ix+10, iy+ih)
+    elif tool_type == "移动":
+        # 绘制移动图标：十字箭头（四个方向）
+        cx, cy = 16, 16
+        arrow_len = 10
+        arrow_head = 3
+        # 上箭头
+        painter.drawLine(cx, cy - arrow_len, cx, cy + arrow_len)
+        painter.drawLine(cx, cy - arrow_len, cx - arrow_head, cy - arrow_len + arrow_head)
+        painter.drawLine(cx, cy - arrow_len, cx + arrow_head, cy - arrow_len + arrow_head)
+        # 下箭头
+        painter.drawLine(cx, cy + arrow_len, cx - arrow_head, cy + arrow_len - arrow_head)
+        painter.drawLine(cx, cy + arrow_len, cx + arrow_head, cy + arrow_len - arrow_head)
+        # 左箭头
+        painter.drawLine(cx - arrow_len, cy, cx + arrow_len, cy)
+        painter.drawLine(cx - arrow_len, cy, cx - arrow_len + arrow_head, cy - arrow_head)
+        painter.drawLine(cx - arrow_len, cy, cx - arrow_len + arrow_head, cy + arrow_head)
+        # 右箭头
+        painter.drawLine(cx + arrow_len, cy, cx + arrow_len - arrow_head, cy - arrow_head)
+        painter.drawLine(cx + arrow_len, cy, cx + arrow_len - arrow_head, cy + arrow_head)
         
     painter.end()
     return QIcon(pixmap)
@@ -67,7 +86,7 @@ def create_left_toolbox(main_window):
     toolbox.setIconSize(QSize(32, 32))
     
     # 暂时只挂载 V2.0 已完成的三个核心工具
-    tool_definitions = ["选择", "直线", "矩形"]
+    tool_definitions = ["选择", "直线", "矩形", "偏移", "移动"]
 
     for tool_name in tool_definitions:
         icon = generate_cad_style_icon(tool_name)
