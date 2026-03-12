@@ -8,7 +8,7 @@ from managers.color_manager import ColorManager
 from tools.tool_select import SelectTool
 from tools.tool_line import LineTool
 from tools.tool_rect import RectTool
-
+from tools.tool_offset import OffsetTool
 class CommandDeleteLines(QUndoCommand):
     def __init__(self, scene, items):
         super().__init__()
@@ -54,7 +54,8 @@ class CADGraphicsView(QGraphicsView):
         self.tools = {
             "选择": SelectTool(self),
             "直线": LineTool(self),
-            "矩形": RectTool(self)
+            "矩形": RectTool(self),
+            "偏移": OffsetTool(self)
         }
         self.current_tool = self.tools["直线"] 
         self.current_tool.activate()
