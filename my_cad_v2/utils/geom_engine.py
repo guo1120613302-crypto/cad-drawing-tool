@@ -81,3 +81,4 @@ class GeometryEngine:
             off_x2, off_y2 = x2 + nx * distance, y2 + ny * distance
             return [(off_x1, off_y1), (off_x2, off_y2)]
         except: return None
+    

@@ -14,6 +14,39 @@ from tools.tool_select import SelectTool
 from tools.tool_line import LineTool
 from tools.tool_rect import RectTool
 from tools.tool_offset import OffsetTool
+from tools.tool_trim import TrimTool
+# 导入新增的变换工具
+from tools.tool_rotate import RotateTool
+from tools.tool_mirror import MirrorTool
+
+class CommandPasteGeom(QUndoCommand):
+    """复制粘贴对应的撤销栈封装"""
+    def __init__(self, scene, data):
+        super().__init__()
+        self.scene = scene
+        self.created_items = []
+        for d in data:
+            ItemClass = d['type']
+            # 粘贴时默认向右下偏移 50 像素，方便看清
+            new_c = [(x + 50, y + 50) for x, y in d['coords']] 
+            item = ItemClass(new_c) if ItemClass == SmartPolygonItem else ItemClass(new_c[0], new_c[1])
+            pen = QPen(QColor(255, 255, 255), 1)
+            pen.setCosmetic(True)
+            item.setPen(pen)
+            self.created_items.append(item)
+            
+    def redo(self):
+        self.scene.clearSelection()
+        for item in self.created_items:
+            if item not in self.scene.items():
+                self.scene.addItem(item)
+            item.setSelected(True)
+            
+    def undo(self):
+        for item in self.created_items:
+            if item.scene() == self.scene:
+                item.setSelected(False)
+                self.scene.removeItem(item)
 
 class CADGraphicsView(QGraphicsView):
     def __init__(self, scene, main_window):
@@ -36,6 +69,9 @@ class CADGraphicsView(QGraphicsView):
         self.last_cursor_point = QPointF(0, 0)
         self.acquired_point = None 
         
+        # 剪贴板数据存储区
+        self.clipboard_data = []
+        
         # 1. 初始化追踪与 HUD 组件
         self._init_global_ui_components()
 
@@ -44,7 +80,10 @@ class CADGraphicsView(QGraphicsView):
             "选择": SelectTool(self),
             "直线": LineTool(self),
             "矩形": RectTool(self),
-            "偏移": OffsetTool(self)
+            "偏移": OffsetTool(self),
+            "旋转": RotateTool(self),
+            "镜像": MirrorTool(self),
+            "修剪": TrimTool(self)   # <--- 新增这行
         }
         self.current_tool = self.tools["直线"]
         self.current_tool.activate()
@@ -103,7 +142,7 @@ class CADGraphicsView(QGraphicsView):
             if self.current_tool:
                 self.current_tool.deactivate()
             self._cleanup_tracking_huds()
-            self.scene().clearSelection()
+           
             self.current_tool = self.tools[tool_name]
             self.current_tool.activate()
 
@@ -160,14 +199,10 @@ class CADGraphicsView(QGraphicsView):
         lod = self.transform().m11()
         if lod <= 0: return
         
-        # --- 修复：默认夹点尺寸调整 ---
-        # Image 3 里默认蓝方块太大了，我们缩到 6 像素。
         grip_size = 6.0 / lod 
         half_size = grip_size / 2.0
         
-        # --- 修复：拉伸激活点的尺寸独立化 ---
-        # 创建一个 tiny dot 的尺寸，仿 CAD 效果。
-        hot_grip_size = 2.0 / lod # 极小的精准点，不遮挡
+        hot_grip_size = 2.0 / lod 
         half_hot_size = hot_grip_size / 2.0
         
         pen = QPen(QColor(255, 255, 255), 1.0 / lod)
@@ -179,11 +214,9 @@ class CADGraphicsView(QGraphicsView):
                 hot_idx = getattr(item, 'hot_grip_index', -1)
                 for i, (gx, gy) in enumerate(item.get_grips()):
                     if i == hot_idx:
-                        # 【V2.0 修复】：如果是被激活的点，绘制一个 tiny red point
                         painter.setBrush(QBrush(QColor(255, 0, 0)))
                         painter.drawRect(QRectF(gx - half_hot_size, gy - half_hot_size, hot_grip_size, hot_grip_size))
                     else:
-                        # 默认的蓝色未命中点，缩小到 grip_size (6 像素)
                         painter.setBrush(QBrush(QColor(0, 120, 215))) 
                         painter.drawRect(QRectF(gx - half_size, gy - half_size, grip_size, grip_size))
 
@@ -466,6 +499,29 @@ class CADGraphicsView(QGraphicsView):
 
     def keyPressEvent(self, event: QKeyEvent):
         try:
+            # ================= [新增快捷键逻辑] =================
+            # 拦截 Ctrl+C 复制
+            if event.matches(QKeySequence.StandardKey.Copy):
+                selected = self.scene().selectedItems()
+                self.clipboard_data.clear()
+                for item in selected:
+                    if isinstance(item, (SmartLineItem, SmartPolygonItem)):
+                        self.clipboard_data.append({'type': type(item), 'coords': list(item.coords)})
+                return
+                
+            # 拦截 Ctrl+V 粘贴
+            elif event.matches(QKeySequence.StandardKey.Paste):
+                if self.clipboard_data:
+                    cmd = CommandPasteGeom(self.scene(), self.clipboard_data)
+                    self.undo_stack.push(cmd)
+                return
+                
+            # 拦截 Ctrl+R 旋转
+            elif event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_R:
+                self.switch_tool("旋转")
+                return
+            # ===================================================
+
             if event.matches(QKeySequence.StandardKey.Undo):
                 self.undo_stack.undo()
                 self.scene().clearSelection()
@@ -486,7 +542,6 @@ class CADGraphicsView(QGraphicsView):
                 if self.current_tool and not self.current_tool.get_reference_point():
                     selected = self.scene().selectedItems()
                     if selected:
-                        # 对于 V2.0，暂时用直接删除。后续可引入 V2.0 专用的 CommandDeleteGeom
                         for item in selected:
                             if item in self.scene().items():
                                 item.setSelected(False)

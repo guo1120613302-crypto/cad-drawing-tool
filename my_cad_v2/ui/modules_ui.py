@@ -4,7 +4,6 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QToolBar, QDockWidget,
                              QGraphicsScene, QGridLayout, QPushButton, QFrame)
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction, QIcon, QPixmap, QPainter, QColor, QPen
-from core.core_canvas import CADGraphicsView 
 
 def generate_cad_style_icon(tool_type):
     pixmap = QPixmap(32, 32)
@@ -36,26 +35,35 @@ def generate_cad_style_icon(tool_type):
         painter.drawLine(ix, iy, ix, iy+14)
         painter.drawLine(ix+10, iy+10, ix+iw, iy+10)
         painter.drawLine(ix+10, iy+10, ix+10, iy+ih)
-    elif tool_type == "移动":
-        # 绘制移动图标：十字箭头（四个方向）
-        cx, cy = 16, 16
-        arrow_len = 10
-        arrow_head = 3
-        # 上箭头
-        painter.drawLine(cx, cy - arrow_len, cx, cy + arrow_len)
-        painter.drawLine(cx, cy - arrow_len, cx - arrow_head, cy - arrow_len + arrow_head)
-        painter.drawLine(cx, cy - arrow_len, cx + arrow_head, cy - arrow_len + arrow_head)
-        # 下箭头
-        painter.drawLine(cx, cy + arrow_len, cx - arrow_head, cy + arrow_len - arrow_head)
-        painter.drawLine(cx, cy + arrow_len, cx + arrow_head, cy + arrow_len - arrow_head)
-        # 左箭头
-        painter.drawLine(cx - arrow_len, cy, cx + arrow_len, cy)
-        painter.drawLine(cx - arrow_len, cy, cx - arrow_len + arrow_head, cy - arrow_head)
-        painter.drawLine(cx - arrow_len, cy, cx - arrow_len + arrow_head, cy + arrow_head)
-        # 右箭头
-        painter.drawLine(cx + arrow_len, cy, cx + arrow_len - arrow_head, cy - arrow_head)
-        painter.drawLine(cx + arrow_len, cy, cx + arrow_len - arrow_head, cy + arrow_head)
+    elif tool_type == "旋转":
+        # 画一个圆弧加箭头表示旋转
+        painter.drawArc(6, 6, 20, 20, 45 * 16, 270 * 16)
+        painter.drawLine(26, 16, 22, 12)
+        painter.drawLine(26, 16, 30, 12)
+        painter.drawPoint(16, 16)
+    elif tool_type == "镜像":
+        # 中间的对称轴
+        pen_dash = QPen(QColor(255, 255, 255), 1, Qt.PenStyle.DashLine)
+        pen_dash.setCosmetic(True)
+        painter.setPen(pen_dash)
+        painter.drawLine(16, 4, 16, 28) 
+        painter.setPen(pen)
+        # 左侧实线三角形
+        painter.drawLine(6, 8, 14, 16); painter.drawLine(14, 16, 6, 24); painter.drawLine(6, 24, 6, 8)
+        # 右侧虚线三角形
+        painter.setPen(pen_dash)
+        painter.drawLine(26, 8, 18, 16); painter.drawLine(18, 16, 26, 24); painter.drawLine(26, 24, 26, 8)
         
+    elif tool_type == "修剪":
+        pen_solid = QPen(QColor(255, 255, 255), 1.5)
+        painter.setPen(pen_solid)
+        painter.drawLine(6, 16, 12, 16)
+        painter.drawLine(20, 16, 26, 16)
+        painter.drawLine(16, 6, 16, 26)
+        
+        pen_dash = QPen(QColor(255, 0, 0), 1.5, Qt.PenStyle.DashLine)
+        painter.setPen(pen_dash)
+        painter.drawLine(12, 16, 20, 16)
     painter.end()
     return QIcon(pixmap)
 
@@ -85,12 +93,13 @@ def create_left_toolbox(main_window):
     toolbox.setMovable(False)
     toolbox.setIconSize(QSize(32, 32))
     
-    # 暂时只挂载 V2.0 已完成的核心工具
-    tool_definitions = ["选择", "直线", "矩形", "偏移"]
+    # 【核心修改点】：把 旋转 和 镜像 挂载到左侧面板
+    tool_definitions = ["选择", "直线", "矩形", "偏移", "旋转", "镜像","修剪"]
 
     for tool_name in tool_definitions:
         icon = generate_cad_style_icon(tool_name)
         action = QAction(icon, tool_name, main_window)
+        # 此处直接绑定切换工具
         action.triggered.connect(lambda checked, name=tool_name: main_window.view_2d.switch_tool(name))
         toolbox.addAction(action)
         
@@ -103,6 +112,7 @@ def create_status_bar(main_window):
 
 def create_2d_viewport(main_window):
     dock_2d = QDockWidget("⬛ 2D 绘图视窗", main_window)
+    from core.core_canvas import CADGraphicsView # 延迟导入避免循环依赖
     scene_2d = QGraphicsScene()
     view_2d = CADGraphicsView(scene_2d, main_window) 
     dock_2d.setWidget(view_2d)
@@ -134,7 +144,6 @@ def create_properties_panel(main_window):
     
     def make_color_callback(c):
         main_window.view_2d.color_manager.set_color(c)
-        # 通知画板更新选中的实体颜色
         for item in main_window.view_2d.scene().selectedItems():
             pen = item.pen()
             pen.setColor(QColor(c))
