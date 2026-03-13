@@ -80,6 +80,18 @@ def generate_cad_style_icon(tool_type):
         painter.setPen(pen_dash)
         painter.drawLine(15, 16, 24, 16)
 
+    elif tool_type == "打断":    # <--- 新增打断图标绘制
+        pen_solid = QPen(QColor(255, 255, 255), 1.5)
+        painter.setPen(pen_solid)
+        painter.drawLine(4, 16, 12, 16) # 左半边线
+        painter.drawLine(20, 16, 28, 16) # 右半边线
+        
+        # 中间的断开标志
+        pen_break = QPen(QColor(255, 165, 0), 1.5)
+        painter.setPen(pen_break)
+        painter.drawLine(16, 12, 16, 20)
+        painter.drawLine(12, 16, 20, 16)
+
     painter.end()
     return QIcon(pixmap)
 
@@ -110,7 +122,7 @@ def create_left_toolbox(main_window):
     toolbox.setIconSize(QSize(32, 32))
     
     # 【核心修改点】：把 旋转 和 镜像 挂载到左侧面板
-    tool_definitions = ["选择", "直线", "矩形", "偏移", "旋转", "镜像","修剪","延伸"]
+    tool_definitions = ["选择", "直线", "矩形", "偏移", "旋转", "镜像","修剪","延伸","打断"]
 
     for tool_name in tool_definitions:
         icon = generate_cad_style_icon(tool_name)

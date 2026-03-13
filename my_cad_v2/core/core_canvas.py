@@ -16,6 +16,7 @@ from tools.tool_rect import RectTool
 from tools.tool_offset import OffsetTool
 from tools.tool_trim import TrimTool
 from tools.tool_extend import ExtendTool
+from tools.tool_break import BreakTool
 # 导入新增的变换工具
 from tools.tool_rotate import RotateTool
 from tools.tool_mirror import MirrorTool
@@ -85,7 +86,8 @@ class CADGraphicsView(QGraphicsView):
             "旋转": RotateTool(self),
             "镜像": MirrorTool(self),
             "修剪": TrimTool(self),
-            "延伸": ExtendTool(self)   # <--- 新增这行
+            "延伸": ExtendTool(self),
+            "打断": BreakTool(self)  # <--- 新增这行
         }
         self.current_tool = self.tools["直线"]
         self.current_tool.activate()
