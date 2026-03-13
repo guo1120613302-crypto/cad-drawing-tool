@@ -9,13 +9,19 @@ from PyQt6.QtGui import QPen, QColor, QUndoCommand, QPolygonF, QBrush
 class CommandRotateGeom(QUndoCommand):
     def __init__(self, rotate_data):
         super().__init__()
-        self.rotate_data = rotate_data 
+        self.rotate_data = rotate_data  # [(item, old_coords, new_coords, layer_name)]
     def redo(self):
-        for item, _, new_c in self.rotate_data:
-            if item.scene(): item.set_coords(new_c)
+        for item, _, new_c, layer_name in self.rotate_data:
+            if item.scene(): 
+                item.set_coords(new_c)
+                if layer_name:
+                    item.layer_name = layer_name
     def undo(self):
-        for item, old_c, _ in self.rotate_data:
-            if item.scene(): item.set_coords(old_c)
+        for item, old_c, _, layer_name in self.rotate_data:
+            if item.scene(): 
+                item.set_coords(old_c)
+                if layer_name:
+                    item.layer_name = layer_name
 
 class RotateTool(BaseTool):
     def __init__(self, canvas):
@@ -220,7 +226,8 @@ class RotateTool(BaseTool):
         for item in self.target_items:
             old_c = list(item.coords)
             new_c = [self._rotate_point(x, y, cx, cy, angle_deg) for x, y in old_c]
-            rotate_data.append((item, old_c, new_c))
+            layer_name = getattr(item, 'layer_name', None)
+            rotate_data.append((item, old_c, new_c, layer_name))
             
         if rotate_data:
             self.canvas.undo_stack.push(CommandRotateGeom(rotate_data))

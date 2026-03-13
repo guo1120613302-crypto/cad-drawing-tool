@@ -12,14 +12,22 @@ class CommandExtendGeom(QUndoCommand):
         self.item = item
         self.old_coords = old_coords
         self.new_coords = new_coords
+        # 保存图层属性
+        self.layer_name = getattr(item, 'layer_name', None)
         
     def redo(self):
         if self.item.scene():
             self.item.set_coords(self.new_coords)
+            # 恢复图层属性
+            if self.layer_name:
+                self.item.layer_name = self.layer_name
             
     def undo(self):
         if self.item.scene():
             self.item.set_coords(self.old_coords)
+            # 恢复图层属性
+            if self.layer_name:
+                self.item.layer_name = self.layer_name
 
 class ExtendTool(BaseTool):
     def __init__(self, canvas):

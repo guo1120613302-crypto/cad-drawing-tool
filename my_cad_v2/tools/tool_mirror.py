@@ -7,19 +7,22 @@ from PyQt6.QtCore import Qt, QPointF, QLineF
 from PyQt6.QtGui import QPen, QColor, QUndoCommand, QPolygonF, QBrush
 
 class CommandMirrorGeom(QUndoCommand):
-    def __init__(self, scene, items_data):
+    def __init__(self, scene, items_data, layer_manager):
         super().__init__()
         self.scene = scene
-        self.items_data = items_data 
+        self.items_data = items_data  # [(ItemClass, coords, source_item)]
+        self.layer_manager = layer_manager
         self.created_items = []
     def redo(self):
         self.created_items.clear()
         self.scene.clearSelection()
-        for ItemClass, coords in self.items_data:
+        for ItemClass, coords, source_item in self.items_data:
             item = ItemClass(coords) if ItemClass == SmartPolygonItem else ItemClass(coords[0], coords[1])
             pen = QPen(QColor(255, 255, 255), 1)
             pen.setCosmetic(True)
             item.setPen(pen)
+            # 【修复】：继承源图形的图层属性
+            self.layer_manager.copy_layer_props(item, source_item)
             self.scene.addItem(item)
             item.setSelected(True)
             self.created_items.append(item)
@@ -233,8 +236,8 @@ class MirrorTool(BaseTool):
         items_data = []
         for item in self.target_items:
             new_c = [self._mirror_point(px, py, x1, y1, x2, y2) for px, py in item.coords]
-            items_data.append((type(item), new_c))
+            items_data.append((type(item), new_c, item))  # 添加源图形引用
         if items_data:
-            self.canvas.undo_stack.push(CommandMirrorGeom(self.canvas.scene(), items_data))
+            self.canvas.undo_stack.push(CommandMirrorGeom(self.canvas.scene(), items_data, self.canvas.layer_manager))
         self.deactivate()
         self.canvas.switch_tool("选择")

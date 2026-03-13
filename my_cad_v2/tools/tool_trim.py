@@ -253,6 +253,8 @@ class TrimTool(BaseTool):
                 for p1, p2 in pieces_to_keep:
                     new_line = SmartLineItem(p1, p2)
                     new_line.setPen(pen)
+                    # 【修复】：继承源图形的图层属性
+                    self.canvas.layer_manager.copy_layer_props(new_line, target_item)
                     items_to_add.append(new_line)
                     
                 cmd = CommandTrimGeom(self.canvas.scene(), items_to_remove, items_to_add)

@@ -268,6 +268,10 @@ class OffsetTool(BaseTool):
                 pen = QPen(current_color, 1)
                 pen.setCosmetic(True)
                 new_item.setPen(pen)
+                
+                # 【修复】：继承源图形的图层属性
+                self.canvas.layer_manager.copy_layer_props(new_item, self.target_item)
+                
                 self.canvas.undo_stack.push(CommandCreateGeom(self.canvas.scene(), new_item))
                 
             self._cleanup_ghost()

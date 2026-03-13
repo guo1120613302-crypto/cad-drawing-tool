@@ -168,6 +168,9 @@ class BreakTool(BaseTool):
                     l2 = SmartLineItem((bx, by), p2)
                     l1.setPen(pen)
                     l2.setPen(pen)
+                    # 【修复】：继承源图形的图层属性
+                    self.canvas.layer_manager.copy_layer_props(l1, target_item)
+                    self.canvas.layer_manager.copy_layer_props(l2, target_item)
                     new_items.extend([l1, l2])
                     
                 elif break_data['type'] == 'poly':
@@ -182,12 +185,17 @@ class BreakTool(BaseTool):
                             l2 = SmartLineItem((bx, by), p2)
                             l1.setPen(pen)
                             l2.setPen(pen)
+                            # 【修复】：继承源图形的图层属性
+                            self.canvas.layer_manager.copy_layer_props(l1, target_item)
+                            self.canvas.layer_manager.copy_layer_props(l2, target_item)
                             new_items.extend([l1, l2])
                         else:
                             p1 = coords[i]
                             p2 = coords[(i+1)%len(coords)]
                             l = SmartLineItem(p1, p2)
                             l.setPen(pen)
+                            # 【修复】：继承源图形的图层属性
+                            self.canvas.layer_manager.copy_layer_props(l, target_item)
                             new_items.append(l)
                             
                 cmd = CommandBreakGeom(self.canvas.scene(), target_item, new_items)

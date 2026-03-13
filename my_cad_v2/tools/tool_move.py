@@ -10,13 +10,19 @@ from PyQt6.QtGui import QPen, QColor, QUndoCommand, QPolygonF, QCursor
 class CommandMoveGeom(QUndoCommand):
     def __init__(self, move_data):
         super().__init__()
-        self.move_data = move_data  # 格式: [(item, old_coords, new_coords)]
+        self.move_data = move_data  # 格式: [(item, old_coords, new_coords, layer_name)]
     def redo(self):
-        for item, _, new_c in self.move_data:
-            if item.scene(): item.set_coords(new_c)
+        for item, _, new_c, layer_name in self.move_data:
+            if item.scene(): 
+                item.set_coords(new_c)
+                if layer_name:
+                    item.layer_name = layer_name
     def undo(self):
-        for item, old_c, _ in self.move_data:
-            if item.scene(): item.set_coords(old_c)
+        for item, old_c, _, layer_name in self.move_data:
+            if item.scene(): 
+                item.set_coords(old_c)
+                if layer_name:
+                    item.layer_name = layer_name
 
 class MoveTool(BaseTool):
     def __init__(self, canvas):
@@ -233,7 +239,8 @@ class MoveTool(BaseTool):
             for item in self.target_items:
                 old_c = list(item.coords)
                 new_c = [(x + dx, y + dy) for x, y in old_c]
-                move_data.append((item, old_c, new_c))
+                layer_name = getattr(item, 'layer_name', None)
+                move_data.append((item, old_c, new_c, layer_name))
                 
             if move_data:
                 self.canvas.undo_stack.push(CommandMoveGeom(move_data))
