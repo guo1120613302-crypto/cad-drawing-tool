@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QToolBar, QDockWidget,
                              QFormLayout, QLineEdit, QLabel, QListWidget, 
                              QGraphicsScene, QGridLayout, QPushButton, QFrame)
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QAction, QIcon, QPixmap, QPainter, QColor, QPen
+from PyQt6.QtGui import QAction, QIcon, QPixmap, QPainter, QColor, QPen, QActionGroup
 
 def generate_cad_style_icon(tool_type):
     pixmap = QPixmap(32, 32)
@@ -75,27 +75,46 @@ def generate_cad_style_icon(tool_type):
         painter.setPen(pen_break)
         painter.drawLine(16, 12, 16, 20)
         painter.drawLine(12, 16, 20, 16)
+    elif tool_type == "标注":
+        pen_solid = QPen(QColor(255, 255, 255), 1)
+        painter.setPen(pen_solid)
+        painter.drawLine(6, 6, 6, 26)
+        painter.drawLine(26, 6, 26, 26)
+        painter.drawLine(6, 16, 26, 16)
+        painter.drawLine(6, 16, 9, 13); painter.drawLine(6, 16, 9, 19)
+        painter.drawLine(26, 16, 23, 13); painter.drawLine(26, 16, 23, 19)
+        font = painter.font()
+        font.setPointSize(6)
+        painter.setFont(font)
+        painter.drawText(12, 14, "10")
         
     painter.end()
     return QIcon(pixmap)
 
 def create_menu_bar(main_window):
+    # 【核心视觉升级】：加入工具激活状态(checked)与图层整行高亮
     dark_night_theme = """
     QWidget { background-color: #333333; color: #FFFFFF; font-family: Arial, Microsoft YaHei; font-size: 12px; border: none; }
     QMenuBar { background-color: #222222; border-bottom: 1px solid #111111; padding-left: 5px; }
     QMenuBar::item { background-color: transparent; padding: 5px 10px; color: #BBBBBB; }
     QMenuBar::item:selected { background-color: #555555; color: #FFFFFF; }
-    QToolBar { background-color: #2b2b2b; border-right: 1px solid #111111; padding: 5px; }
-    QToolButton { background-color: transparent; padding: 5px; border: 1px solid transparent; border-radius: 3px; }
+    
+    /* 工具栏变窄变瘦，加入经典 PS 选中态 */
+    QToolBar { background-color: #2b2b2b; border-right: 1px solid #111111; padding: 1px; spacing: 1px; }
+    QToolButton { background-color: transparent; padding: 4px; border: 1px solid transparent; border-radius: 3px; }
     QToolButton:hover { background-color: #444444; }
-    QToolButton:pressed, QToolButton:checked { background-color: #555555; }
+    QToolButton:checked { background-color: #1a1a1a; border: 1px solid #000000; } 
+    
     QDockWidget { background-color: #333333; color: #AAAAAA; font-weight: bold; titlebar-close-icon: url(none); titlebar-normal-icon: url(none); }
     QDockWidget::title { background-color: #2b2b2b; padding-left: 10px; padding-top: 6px; padding-bottom: 6px; border-bottom: 1px solid #111111; }
     QStatusBar { background-color: #111111; color: #888888; border-top: 1px solid #000000; padding-left: 5px; }
     QStatusBar QLabel { background-color: transparent; color: #AAAAAA; }
     QLineEdit { background-color: #1a1a1a; color: #FFFFFF; border: 1px solid #111111; border-radius: 2px; padding: 3px 5px; }
-    QListWidget { background-color: #1a1a1a; color: #FFFFFF; border: 1px solid #111111; padding: 5px; }
-    QListWidget::item:selected { background-color: #555555; color: #FFFFFF; }
+    
+    /* 图层列表 PS 风格整行高亮 */
+    QListWidget { background-color: #2b2b2b; color: #FFFFFF; border: none; outline: none; }
+    QListWidget::item { border-bottom: 1px solid #222222; }
+    QListWidget::item:selected { background-color: #4a4a4a; } 
     """
     main_window.setStyleSheet(dark_night_theme)
 
@@ -103,17 +122,29 @@ def create_left_toolbox(main_window):
     toolbox = QToolBar("绘图工具")
     main_window.addToolBar(Qt.ToolBarArea.LeftToolBarArea, toolbox)
     toolbox.setMovable(False)
-    toolbox.setIconSize(QSize(32, 32))
+    # 【修复 1】：缩小图标并拉紧间距，达成极窄工具栏
+    toolbox.setIconSize(QSize(20, 20)) 
     
-    # 包含了全部 9 个工具的挂载
-    tool_definitions = ["选择", "直线", "矩形", "偏移", "旋转", "镜像", "修剪", "延伸", "打断"]
+    # 【修复 2】：使用 QActionGroup 强制管理工具排他性（单选按钮）
+    ag = QActionGroup(main_window)
+    ag.setExclusive(True)
+
+    tool_definitions = ["选择", "直线", "矩形", "偏移", "旋转", "镜像", "修剪", "延伸", "打断", "标注"]
 
     for tool_name in tool_definitions:
         icon = generate_cad_style_icon(tool_name)
         action = QAction(icon, tool_name, main_window)
-        # 绑定工具切换
+        # 允许被 Check（高亮下陷）
+        action.setCheckable(True)
+        if tool_name == "直线": 
+            action.setChecked(True) # 默认启动时高亮直线
+        
+        ag.addAction(action)
         action.triggered.connect(lambda checked, name=tool_name: main_window.view_2d.switch_tool(name))
         toolbox.addAction(action)
+        
+    # 保存 action 引用，方便后续按 Esc 退回选择工具时反向点亮按钮
+    main_window.tool_actions = ag 
         
     return toolbox
 
@@ -124,14 +155,14 @@ def create_status_bar(main_window):
 
 def create_2d_viewport(main_window):
     dock_2d = QDockWidget("⬛ 2D 绘图视窗", main_window)
-    from core.core_canvas import CADGraphicsView # 延迟导入避免循环依赖
+    from core.core_canvas import CADGraphicsView
     scene_2d = QGraphicsScene()
     view_2d = CADGraphicsView(scene_2d, main_window) 
     dock_2d.setWidget(view_2d)
     return dock_2d, view_2d, scene_2d
 
 def create_3d_viewport(main_window):
-    dock_3d = QDockWidget("🧊 3D 白模视窗 (V2.0 预留)", main_window)
+    dock_3d = QDockWidget("🧊 3D 白模视窗", main_window)
     view_3d = QWidget()
     layout_3d = QVBoxLayout()
     layout_3d.addWidget(QLabel("3D 白模预览区\n(将接入 trimesh 和 pyqtgraph)", alignment=Qt.AlignmentFlag.AlignCenter))
@@ -145,17 +176,14 @@ def create_properties_panel(main_window):
     layout = QVBoxLayout() 
     layout.setContentsMargins(5, 5, 5, 5)
 
-    # ================= 1. 恢复纯正的主题色板 =================
     layout.addWidget(QLabel("🎨 主题色板 (Color Palette):"))
     grid_matrix = QGridLayout()
     grid_matrix.setSpacing(1) 
     
-    # 获取我们在 color_manager.py 中定义的颜色矩阵
     matrix = main_window.view_2d.color_manager.color_matrix
     
     def make_color_callback(c):
         main_window.view_2d.color_manager.set_color(c)
-        # 如果当前有选中的图形，点击色板直接将它们变色
         for item in main_window.view_2d.scene().selectedItems():
             pen = item.pen()
             pen.setColor(QColor(c))
@@ -171,15 +199,12 @@ def create_properties_panel(main_window):
             
     layout.addLayout(grid_matrix)
     
-    # 加一条分割线
     line = QFrame()
     line.setFrameShape(QFrame.Shape.HLine)
     line.setStyleSheet("color: #444;")
     layout.addWidget(line)
 
-    # ================= 2. 嵌入极简图层管理器 =================
     layout.addWidget(QLabel("📚 图层面板 (Layers):"))
-    # 直接将我们写好的图层面板塞进来
     layout.addWidget(main_window.view_2d.layer_manager)
     
     widget.setLayout(layout)

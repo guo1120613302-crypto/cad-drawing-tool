@@ -1,17 +1,17 @@
 # core/core_canvas.py
-from PyQt6.QtWidgets import QGraphicsView, QGraphicsLineItem, QGraphicsTextItem, QGraphicsRectItem, QGraphicsItem
+from PyQt6.QtWidgets import QGraphicsView, QGraphicsLineItem, QGraphicsTextItem, QGraphicsRectItem, QGraphicsItem, QLabel
 from PyQt6.QtCore import Qt, QLineF, QPointF, QRectF
 from PyQt6.QtGui import QPen, QColor, QPainter, QKeyEvent, QUndoStack, QUndoCommand, QKeySequence, QBrush
 import math
-import traceback  # 引入全局防崩溃追踪
+import traceback
 
 from utils.geom_engine import GeometryEngine
-from core.core_items import SmartLineItem, SmartPolygonItem
+from core.core_items import SmartLineItem, SmartPolygonItem, SmartDimensionItem
 
 from managers.color_manager import ColorManager
 from managers.layer_manager import LayerManager
 
-# 导入 V2.0 重写后的工具
+# 导入所有工具
 from tools.tool_select import SelectTool
 from tools.tool_line import LineTool
 from tools.tool_rect import RectTool
@@ -19,9 +19,10 @@ from tools.tool_offset import OffsetTool
 from tools.tool_trim import TrimTool
 from tools.tool_extend import ExtendTool
 from tools.tool_break import BreakTool
-# 导入新增的变换工具
 from tools.tool_rotate import RotateTool
 from tools.tool_mirror import MirrorTool
+from tools.tool_move import MoveTool
+from tools.tool_dimension import DimensionTool
 
 class CommandPasteGeom(QUndoCommand):
     """复制粘贴对应的撤销栈封装"""
@@ -31,9 +32,15 @@ class CommandPasteGeom(QUndoCommand):
         self.created_items = []
         for d in data:
             ItemClass = d['type']
-            # 粘贴时默认向右下偏移 50 像素，方便看清
             new_c = [(x + 50, y + 50) for x, y in d['coords']] 
-            item = ItemClass(new_c) if ItemClass == SmartPolygonItem else ItemClass(new_c[0], new_c[1])
+            
+            if ItemClass == SmartPolygonItem:
+                item = ItemClass(new_c)
+            elif ItemClass == SmartDimensionItem:
+                item = ItemClass(new_c[0], new_c[1], new_c[2])
+            else:
+                item = ItemClass(new_c[0], new_c[1])
+                
             pen = QPen(QColor(255, 255, 255), 1)
             pen.setCosmetic(True)
             item.setPen(pen)
@@ -52,16 +59,58 @@ class CommandPasteGeom(QUndoCommand):
                 item.setSelected(False)
                 self.scene.removeItem(item)
 
+class HUDProxy:
+    """【智能 HUD 代理】：分离顶部固定提示和跟随光标的极轴信息，彻底解决缩放失真"""
+    def __init__(self, canvas):
+        self.canvas = canvas
+        
+        self.real_polar_item = QGraphicsTextItem()
+        self.real_polar_item.setZValue(1000)
+        self.real_polar_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        self.real_polar_item.hide()
+        self.canvas.scene().addItem(self.real_polar_item)
+        
+        self.instruction_label = QLabel(self.canvas.viewport())
+        self.instruction_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.instruction_label.setStyleSheet("background-color: transparent;")
+        self.instruction_label.move(20, 20)
+        self.instruction_label.hide()
+        
+    def show(self): pass 
+        
+    def hide(self):
+        self.real_polar_item.hide()
+        
+    def hide_all(self):
+        self.real_polar_item.hide()
+        self.instruction_label.hide()
+        
+    def setHtml(self, html):
+        if "极轴" in html or "延长线" in html or "交点" in html or "指定" in html or "距离" in html:
+            self.real_polar_item.setHtml(html)
+            self.real_polar_item.show()
+        else:
+            self.instruction_label.setText(html)
+            self.instruction_label.show()
+            self.instruction_label.adjustSize()
+            
+    def setPos(self, x, y=None):
+        if y is None:
+            y = x.y()
+            x = x.x()
+        self.real_polar_item.setPos(x, y)
+        
+    def toPlainText(self):
+        return self.real_polar_item.toPlainText()
+
+
 class CADGraphicsView(QGraphicsView):
     def __init__(self, scene, main_window):
         super().__init__(scene)
         self.main_window = main_window
 
-
-
-        # 【图层系统核心挂载点】
-        self.layer_manager = LayerManager(self)
         self.color_manager = ColorManager()
+        self.layer_manager = LayerManager(self)
         
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus) 
@@ -77,14 +126,10 @@ class CADGraphicsView(QGraphicsView):
         self._pan_start_pos = None
         self.last_cursor_point = QPointF(0, 0)
         self.acquired_point = None 
-        
-        # 剪贴板数据存储区
         self.clipboard_data = []
         
-        # 1. 初始化追踪与 HUD 组件
         self._init_global_ui_components()
 
-        # 2. 注册 V2.0 工具
         self.tools = {
             "选择": SelectTool(self),
             "直线": LineTool(self),
@@ -94,13 +139,13 @@ class CADGraphicsView(QGraphicsView):
             "镜像": MirrorTool(self),
             "修剪": TrimTool(self),
             "延伸": ExtendTool(self),
-            "打断": BreakTool(self)
+            "打断": BreakTool(self),
+            "标注": DimensionTool(self)
         }
         self.current_tool = self.tools["直线"]
         self.current_tool.activate()
 
     def _init_global_ui_components(self):
-        """初始化极轴追踪线、十字光标标靶和浮动数据显示"""
         self.polar_line = QGraphicsLineItem()
         polar_pen = QPen(QColor(0, 255, 0), 1, Qt.PenStyle.DashLine)
         polar_pen.setCosmetic(True)
@@ -129,24 +174,27 @@ class CADGraphicsView(QGraphicsView):
         self.snap_marker = QGraphicsRectItem(-4, -4, 8, 8) 
         self.snap_marker.setPen(tm_pen)
         self.snap_marker.setZValue(2000)
+        self.snap_marker.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         self.snap_marker.hide()
         self.scene().addItem(self.snap_marker)
         
         self.hud_snap_tip = QGraphicsTextItem()
-        self.hud_snap_tip.setHtml("<div style='background-color:#555555; color:white; padding:1px 3px; font-size:11px;'>捕捉</div>")
         self.hud_snap_tip.setZValue(2000)
+        self.hud_snap_tip.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         self.hud_snap_tip.hide()
         self.scene().addItem(self.hud_snap_tip)
         
         self.hud_length = QGraphicsTextItem()
         self.hud_length.setZValue(1000)
+        self.hud_length.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         self.scene().addItem(self.hud_length)
+        
         self.hud_angle = QGraphicsTextItem()
         self.hud_angle.setZValue(1000)
+        self.hud_angle.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         self.scene().addItem(self.hud_angle)
-        self.hud_polar_info = QGraphicsTextItem()
-        self.hud_polar_info.setZValue(1000)
-        self.scene().addItem(self.hud_polar_info)
+        
+        self.hud_polar_info = HUDProxy(self)
 
     def switch_tool(self, tool_name):
         if tool_name in self.tools:
@@ -156,6 +204,12 @@ class CADGraphicsView(QGraphicsView):
            
             self.current_tool = self.tools[tool_name]
             self.current_tool.activate()
+            
+            if hasattr(self.main_window, 'tool_actions'):
+                for action in self.main_window.tool_actions.actions():
+                    if action.text() == tool_name:
+                        action.setChecked(True)
+                        break
 
     def _cleanup_tracking_huds(self):
         self.acquired_point = None
@@ -165,12 +219,17 @@ class CADGraphicsView(QGraphicsView):
         self.track_marker_v.hide()
         self.hud_length.hide()
         self.hud_angle.hide()
-        self.hud_polar_info.hide()
+        
+        if hasattr(self, 'hud_polar_info'):
+            if hasattr(self.hud_polar_info, 'hide_all'):
+                self.hud_polar_info.hide_all()
+            else:
+                self.hud_polar_info.hide()
+                
         self.snap_marker.hide()
         self.hud_snap_tip.hide()
 
     def drawBackground(self, painter, rect):
-        """自适应网格绘制"""
         super().drawBackground(painter, rect)
         lod = self.transform().m11() 
         grid_size = 10
@@ -202,7 +261,6 @@ class CADGraphicsView(QGraphicsView):
         painter.drawLines(major_lines)
         
     def drawForeground(self, painter, rect):
-        """渲染选中的夹点 (适配 V2.0 SmartItems)"""
         super().drawForeground(painter, rect)
         selected_items = self.scene().selectedItems()
         if not selected_items: return
@@ -221,7 +279,7 @@ class CADGraphicsView(QGraphicsView):
         painter.setPen(pen)
         
         for item in selected_items:
-            if isinstance(item, (SmartLineItem, SmartPolygonItem)):
+            if isinstance(item, (SmartLineItem, SmartPolygonItem, SmartDimensionItem)):
                 hot_idx = getattr(item, 'hot_grip_index', -1)
                 for i, (gx, gy) in enumerate(item.get_grips()):
                     if i == hot_idx:
@@ -232,72 +290,126 @@ class CADGraphicsView(QGraphicsView):
                         painter.drawRect(QRectF(gx - half_size, gy - half_size, grip_size, grip_size))
 
     def _get_snapped_endpoint(self, raw_point):
-        """【V2.0 核心引擎】：全局交点与夹点捕捉"""
+        """【V2.0 终极磁吸引擎】：加入移动包围盒/夹点的幽灵对齐(Ghost Snapping)"""
         snap_threshold = 10.0 / self.transform().m11() 
         closest_dist = float('inf')
         snapped_p = None
+        marker_p = None
         snap_type = "端点"
         
         raw_x, raw_y = raw_point.x(), raw_point.y()
         valid_items = []
+        active_tool = self.current_tool
 
-        # 1. 筛选有效的数学实体
+        # 【核心 1】：找出当前正在被移动的对象，防止其原位置产生“死死吸住”的自吸附 Bug
+        exclude_items = []
+        moving_grips = []
+        base_point = None
+
+        if isinstance(active_tool, SelectTool) and active_tool.is_moving and active_tool.move_start_pos:
+            exclude_items = active_tool.move_items
+            base_point = active_tool.move_start_pos
+            for item in exclude_items: moving_grips.extend(item.get_grips())
+        elif hasattr(active_tool, 'state') and active_tool.__class__.__name__ == 'MoveTool' and active_tool.state == 2 and active_tool.base_point:
+            exclude_items = active_tool.target_items
+            base_point = active_tool.base_point
+            for item in exclude_items: moving_grips.extend(item.get_grips())
+
+        # 获取地图上所有静态的有效几何图形
         for item in self.scene().items():
-            if isinstance(item, (SmartLineItem, SmartPolygonItem)):
-                # 排除正在绘制的临时图形
-                if self.current_tool and hasattr(self.current_tool, 'temp_item') and item == getattr(self.current_tool, 'temp_item', None):
+            if not item.isVisible(): continue  # 忽略被隐藏的图形
+            if item in exclude_items: continue # 忽略正在被移动的本体图形
+            
+            if isinstance(item, (SmartLineItem, SmartPolygonItem, SmartDimensionItem)):
+                if active_tool and hasattr(active_tool, 'temp_item') and item == getattr(active_tool, 'temp_item', None):
                     continue
                 valid_items.append(item)
 
-        # 2. 基础捕捉：端点、中点、角点
+        static_grips = []
         for item in valid_items:
-            for gx, gy in item.get_grips():
-                dist = math.hypot(gx - raw_x, gy - raw_y)
-                if dist < snap_threshold and dist < closest_dist:
-                    closest_dist = dist
-                    snapped_p = QPointF(gx, gy)
-                    snap_type = "端点"
+            static_grips.extend(item.get_grips())
 
-        # 3. 高级捕捉：全局真实相交点 (唤醒 Shapely 内核)
+        # 【逻辑 1】：基础捕捉 —— 鼠标光标靠近静态端点
+        for gx, gy in static_grips:
+            dist = math.hypot(gx - raw_x, gy - raw_y)
+            if dist < snap_threshold and dist < closest_dist:
+                closest_dist = dist
+                snapped_p = QPointF(gx, gy)
+                marker_p = QPointF(gx, gy) # 绿框画在这里
+                snap_type = "端点"
+
+        # 【逻辑 2 黑科技】：幽灵对齐捕捉 —— 移动图形时，自动探测其边界是否撞到静态物体
+        if base_point and moving_grips:
+            dx = raw_x - base_point.x()
+            dy = raw_y - base_point.y()
+            
+            for mgx, mgy in moving_grips:
+                # 预测移动图形的角点位置
+                proj_x = mgx + dx
+                proj_y = mgy + dy
+                
+                # 检查这些角点是否撞到了环境里的静态角点
+                for sgx, sgy in static_grips:
+                    dist = math.hypot(proj_x - sgx, proj_y - sgy)
+                    if dist < snap_threshold and dist < closest_dist:
+                        closest_dist = dist
+                        
+                        # 核心公式：反推鼠标此刻应该在的绝对位置，以保证两个角点 100% 重合！
+                        corrected_mouse_x = sgx - mgx + base_point.x()
+                        corrected_mouse_y = sgy - mgy + base_point.y()
+                        
+                        snapped_p = QPointF(corrected_mouse_x, corrected_mouse_y)
+                        marker_p = QPointF(sgx, sgy) # 绿框直接挂载在两个物体碰撞的那个角上
+                        snap_type = "对齐"
+
+        # 【逻辑 3】：高级真实交点捕捉
         for i in range(len(valid_items)):
             for j in range(i + 1, len(valid_items)):
                 item1, item2 = valid_items[i], valid_items[j]
-                
+                if isinstance(item1, SmartDimensionItem) or isinstance(item2, SmartDimensionItem):
+                    continue
                 if item1.boundingRect().intersects(item2.boundingRect()):
                     is_poly1 = isinstance(item1, SmartPolygonItem)
                     is_poly2 = isinstance(item2, SmartPolygonItem)
-                    
                     intersections = GeometryEngine.get_intersections(
                         item1.coords, item2.coords, is_poly1, is_poly2
                     )
-                    
                     for ix, iy in intersections:
                         dist = math.hypot(ix - raw_x, iy - raw_y)
                         if dist < snap_threshold and dist < closest_dist:
                             closest_dist = dist
                             snapped_p = QPointF(ix, iy)
+                            marker_p = QPointF(ix, iy)
                             snap_type = "交点"
 
-        return snapped_p, snap_type
+        # 返回 3 个值：(矫正后的鼠标坐标, 捕捉类型文字, 绿框应该绘制的绝对坐标)
+        if snapped_p:
+            return snapped_p, snap_type, marker_p
+        return None
 
     def _calculate_global_snap(self, raw_point):
-        """保留完美的全局极轴追踪、延长线吸附与 HUD 显示系统"""
         final_point = QPointF(raw_point)
         snap_threshold_scene = 10.0 / self.transform().m11() 
         
+        # 接收改良后的 3 参数返回值
         snapped_res = self._get_snapped_endpoint(raw_point)
         snapped_p = snapped_res[0] if snapped_res else None
         snap_type = snapped_res[1] if snapped_res else "端点"
+        marker_p = snapped_res[2] if snapped_res else None
         
         is_object_snapped = False
+        lod = self.transform().m11()
+        if lod <= 0: lod = 1.0
         
-        if snapped_p:
-            final_point = QPointF(snapped_p) 
+        if snapped_p and marker_p:
+            final_point = QPointF(snapped_p) # 将最终光标/物体的计算点锚定！
             is_object_snapped = True
-            self.acquired_point = QPointF(snapped_p)
-            self.snap_marker.setPos(final_point)
+            self.acquired_point = QPointF(marker_p) # 极轴追踪从物体碰撞的角点开始
+            
+            # 【完美挂载点】：把吸附绿框永远画在被吸附的角上，而不是鼠标光标下！
+            self.snap_marker.setPos(marker_p)
             self.hud_snap_tip.setHtml(f"<div style='background-color:#555555; color:white; padding:1px 3px; font-size:11px;'>{snap_type}</div>")
-            self.hud_snap_tip.setPos(final_point.x() + 8, final_point.y() + 8)
+            self.hud_snap_tip.setPos(marker_p.x() + 8 / lod, marker_p.y() + 8 / lod)
             self.snap_marker.show()
             self.hud_snap_tip.show()
         else:
@@ -307,7 +419,12 @@ class CADGraphicsView(QGraphicsView):
         ref_point = self.current_tool.get_reference_point()
         
         if not ref_point:
-            self._cleanup_tracking_huds()
+            self.polar_line.hide()
+            self.tracking_line.hide()
+            self.track_marker_h.hide()
+            self.track_marker_v.hide()
+            self.hud_length.hide()
+            self.hud_angle.hide()
             return final_point, 0.0
 
         snap_x = final_point.x()
@@ -352,7 +469,6 @@ class CADGraphicsView(QGraphicsView):
             raw_angle = math.degrees(math.atan2(-(final_point.y() - ref_point.y()), final_point.x() - ref_point.x()))
             snapped_angle = raw_angle if raw_angle >= 0 else raw_angle + 360
 
-        # 画极轴线
         if is_polar_h or is_polar_v:
             rad = math.radians(polar_angle)
             p_end_x = ref_point.x() + 10000 * math.cos(rad)
@@ -363,10 +479,9 @@ class CADGraphicsView(QGraphicsView):
             self.polar_line.show()
         else: self.polar_line.hide()
             
-        # 画追踪线
         if is_track_h or is_track_v:
             m_x, m_y = self.acquired_point.x(), self.acquired_point.y()
-            cross_size = 5.0 / self.transform().m11()
+            cross_size = 5.0 / lod
             self.track_marker_h.setLine(m_x - cross_size, m_y, m_x + cross_size, m_y)
             self.track_marker_v.setLine(m_x, m_y - cross_size, m_x, m_y + cross_size)
             self.track_marker_h.show()
@@ -378,7 +493,6 @@ class CADGraphicsView(QGraphicsView):
             self.track_marker_h.hide()
             self.track_marker_v.hide()
 
-        # HUD 信息更新
         tool_buffer = self.current_tool.get_input_buffer()
         display_length = tool_buffer if tool_buffer else f"{raw_length:.4f}"
         hud_bg_color = "#a0a0a0"
@@ -396,15 +510,17 @@ class CADGraphicsView(QGraphicsView):
         if is_object_snapped or is_polar_h or is_polar_v or is_track_h or is_track_v:
             self.hud_length.setHtml(f"<div style='background-color:#0055ff; color:white; padding:2px 4px; border:1px solid white; font-family:Arial; font-size:12px;'>{display_length}</div>")
             self.hud_angle.setHtml(f"<div style='background-color:#c0c0c0; color:black; padding:2px 4px; border:1px solid black; font-family:Arial; font-size:12px;'>{snapped_angle:.0f}°</div>")
-            self.hud_polar_info.setHtml(f"<div style='background-color:{hud_bg_color}; color:black; padding:2px 4px; border:1px solid black; font-family:Arial; font-size:12px;'>{hud_text}</div>")
             
-            self.hud_length.setPos(final_point.x() - 60, final_point.y() - 25)
-            self.hud_angle.setPos(final_point.x() + 15, final_point.y() + 15)
-            self.hud_polar_info.setPos(final_point.x() + 50, final_point.y() + 15)
+            # 【完美挂载点】：如果是对齐模式，把数据框也挂在碰撞的角点附近！
+            anchor_p = marker_p if (is_object_snapped and marker_p) else final_point
+            self.hud_length.setPos(anchor_p.x() - 60 / lod, anchor_p.y() - 25 / lod)
+            self.hud_angle.setPos(anchor_p.x() + 15 / lod, anchor_p.y() + 15 / lod)
+            
+            self.hud_polar_info.setHtml(f"<div style='background-color:{hud_bg_color}; color:black; padding:2px 4px; border:1px solid black; font-family:Arial; font-size:12px;'>{hud_text}</div>")
+            self.hud_polar_info.setPos(anchor_p.x() + 50 / lod, anchor_p.y() + 15 / lod)
             
             self.hud_length.show()
             self.hud_angle.show()
-            self.hud_polar_info.show()
         else:
             self.hud_length.hide()
             self.hud_angle.hide()
@@ -416,7 +532,6 @@ class CADGraphicsView(QGraphicsView):
 
         return final_point, snapped_angle
 
-    # ================= 鼠标与键盘事件分发 (全局防火墙) =================
     def wheelEvent(self, event):
         try:
             zoom_in_factor = 1.15
@@ -438,7 +553,6 @@ class CADGraphicsView(QGraphicsView):
             if self.current_tool:
                 self.current_tool.mouseMoveEvent(DummyEvent(), final_point, snapped_angle)
         except Exception as e:
-            print(f"【系统级防火墙】拦截到滚轮缩放崩溃: {e}")
             traceback.print_exc()
 
     def mousePressEvent(self, event):
@@ -461,7 +575,6 @@ class CADGraphicsView(QGraphicsView):
             if not handled:
                 super().mousePressEvent(event)
         except Exception as e:
-            print(f"【系统级防火墙】拦截到鼠标按下崩溃: {e}")
             traceback.print_exc()
 
     def mouseMoveEvent(self, event):
@@ -484,7 +597,6 @@ class CADGraphicsView(QGraphicsView):
             if not handled:
                 super().mouseMoveEvent(event)
         except Exception as e:
-            print(f"【系统级防火墙】拦截到鼠标移动崩溃: {e}")
             traceback.print_exc()
 
     def mouseReleaseEvent(self, event):
@@ -505,17 +617,15 @@ class CADGraphicsView(QGraphicsView):
             if not handled:
                 super().mouseReleaseEvent(event)
         except Exception as e:
-            print(f"【系统级防火墙】拦截到鼠标释放崩溃: {e}")
             traceback.print_exc()
 
     def keyPressEvent(self, event: QKeyEvent):
         try:
-            # ================= [快捷键逻辑] =================
             if event.matches(QKeySequence.StandardKey.Copy):
                 selected = self.scene().selectedItems()
                 self.clipboard_data.clear()
                 for item in selected:
-                    if isinstance(item, (SmartLineItem, SmartPolygonItem)):
+                    if isinstance(item, (SmartLineItem, SmartPolygonItem, SmartDimensionItem)):
                         self.clipboard_data.append({'type': type(item), 'coords': list(item.coords)})
                 return
                 
@@ -563,5 +673,4 @@ class CADGraphicsView(QGraphicsView):
             else:
                 super().keyPressEvent(event)
         except Exception as e:
-            print(f"【系统级防火墙】拦截到键盘敲击崩溃: {e}")
             traceback.print_exc()
