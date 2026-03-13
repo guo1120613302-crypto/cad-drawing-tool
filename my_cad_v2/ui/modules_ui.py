@@ -64,6 +64,22 @@ def generate_cad_style_icon(tool_type):
         pen_dash = QPen(QColor(255, 0, 0), 1.5, Qt.PenStyle.DashLine)
         painter.setPen(pen_dash)
         painter.drawLine(12, 16, 20, 16)
+    
+
+    elif tool_type == "延伸":    # <--- 新增这段延伸的画图代码
+        # 画一条代表边界的竖实线
+        pen_solid = QPen(QColor(255, 255, 255), 1.5)
+        painter.setPen(pen_solid)
+        painter.drawLine(24, 6, 24, 26) 
+        
+        # 画原本的短实线
+        painter.drawLine(6, 16, 15, 16)
+        
+        # 画延伸出的绿色虚线
+        pen_dash = QPen(QColor(0, 255, 0), 1.5, Qt.PenStyle.DashLine)
+        painter.setPen(pen_dash)
+        painter.drawLine(15, 16, 24, 16)
+
     painter.end()
     return QIcon(pixmap)
 
@@ -94,7 +110,7 @@ def create_left_toolbox(main_window):
     toolbox.setIconSize(QSize(32, 32))
     
     # 【核心修改点】：把 旋转 和 镜像 挂载到左侧面板
-    tool_definitions = ["选择", "直线", "矩形", "偏移", "旋转", "镜像","修剪"]
+    tool_definitions = ["选择", "直线", "矩形", "偏移", "旋转", "镜像","修剪","延伸"]
 
     for tool_name in tool_definitions:
         icon = generate_cad_style_icon(tool_name)
