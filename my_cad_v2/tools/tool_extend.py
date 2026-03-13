@@ -1,187 +1,307 @@
 # tools/tool_extend.py
 import math
+from PyQt6.QtWidgets import QGraphicsItem, QGraphicsPathItem
+from PyQt6.QtCore import Qt, QPointF, QRectF
+from PyQt6.QtGui import QPen, QColor, QUndoCommand, QPainterPath
+import shapely.geometry as sg
+
 from tools.base_tool import BaseTool
-from core.core_items import SmartLineItem, SmartPolygonItem
-from PyQt6.QtWidgets import QGraphicsLineItem
-from PyQt6.QtCore import Qt, QPointF, QLineF
-from PyQt6.QtGui import QPen, QColor, QUndoCommand
+from core.core_items import SmartLineItem, SmartPolygonItem, SmartCircleItem, SmartPolylineItem, SmartArcItem
 
 class CommandExtendGeom(QUndoCommand):
-    def __init__(self, item, old_coords, new_coords):
+    def __init__(self, scene, old_item, new_item, layer_manager):
         super().__init__()
-        self.item = item
-        self.old_coords = old_coords
-        self.new_coords = new_coords
-        # 保存图层属性
-        self.layer_name = getattr(item, 'layer_name', None)
+        self.scene = scene
+        self.old_item = old_item
+        self.new_item = new_item
+        self.layer_manager = layer_manager
         
+        pen = QPen(self.old_item.pen().color(), 1, self.old_item.pen().style())
+        pen.setCosmetic(True)
+        self.new_item.setPen(pen)
+        self.layer_manager.copy_layer_props(self.new_item, self.old_item)
+
     def redo(self):
-        if self.item.scene():
-            self.item.set_coords(self.new_coords)
-            # 恢复图层属性
-            if self.layer_name:
-                self.item.layer_name = self.layer_name
-            
+        self.scene.clearSelection()
+        if self.old_item in self.scene.items():
+            self.scene.removeItem(self.old_item)
+        if self.new_item not in self.scene.items():
+            self.scene.addItem(self.new_item)
+
     def undo(self):
-        if self.item.scene():
-            self.item.set_coords(self.old_coords)
-            # 恢复图层属性
-            if self.layer_name:
-                self.item.layer_name = self.layer_name
+        if self.new_item in self.scene.items():
+            self.scene.removeItem(self.new_item)
+        if self.old_item not in self.scene.items():
+            self.scene.addItem(self.old_item)
+
 
 class ExtendTool(BaseTool):
     def __init__(self, canvas):
         super().__init__(canvas)
-        self.preview_ghost = None
+        self.state = 0
+        self.ghost_item = None
+        self.current_extend_data = None
 
     def activate(self):
         self.canvas.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        self.state = 0
+        self._cleanup_ghost()
         self._update_hud()
 
     def deactivate(self):
-        self._cleanup_preview()
+        self._cleanup_ghost()
+        if hasattr(self.canvas, '_cleanup_tracking_huds'):
+            self.canvas._cleanup_tracking_huds()
 
-    def _cleanup_preview(self):
-        if self.preview_ghost and self.preview_ghost.scene():
-            self.canvas.scene().removeItem(self.preview_ghost)
-        self.preview_ghost = None
+    def _cleanup_ghost(self):
+        if self.ghost_item and self.ghost_item.scene():
+            self.canvas.scene().removeItem(self.ghost_item)
+        self.ghost_item = None
+        self.current_extend_data = None
 
     def _update_hud(self):
         if not hasattr(self.canvas, 'hud_polar_info'): return
         self.canvas.hud_polar_info.show()
-        self.canvas.hud_polar_info.setHtml(
-            "<div style='background-color:#5cb85c; color:white; padding:4px 8px; border-radius:2px; font-family:Arial; font-size:12px;'>📏 智能延伸: 移动鼠标预览，点击延伸至最近边界</div>"
-        )
+        text, color = "延伸: 移动鼠标预览，点击延伸至最近边界 (封闭图形不可延伸)", "#5cb85c"
+        self.canvas.hud_polar_info.setHtml(f"<div style='background-color:{color}; color:white; padding:4px 8px; border-radius:2px; font-family:Arial; font-size:12px;'>✏️ {text}</div>")
         self.canvas.hud_polar_info.setPos(self.canvas.mapToScene(20, 20))
 
-    def _ray_intersect_segment(self, O, D, A, B):
-        """核心射线碰撞检测算法：计算射线 O+t*D 与线段 AB 的交点"""
-        Px, Py = O
-        Rx, Ry = D
-        Qx, Qy = A
-        Sx, Sy = B[0] - A[0], B[1] - A[1]
-
-        cross_RS = Rx * Sy - Ry * Sx
-        # 如果平行或共线，无视
-        if abs(cross_RS) < 1e-8: 
-            return None
-
-        Q_minus_Px = Qx - Px
-        Q_minus_Py = Qy - Py
-
-        t = (Q_minus_Px * Sy - Q_minus_Py * Sx) / cross_RS
-        u = (Q_minus_Px * Ry - Q_minus_Py * Rx) / cross_RS
-
-        # t > 1e-4 确保射线是向前发射且不包含起点本身
-        # 0 <= u <= 1 确保交点落在目标边界线段上
-        if t > 1e-4 and 0 <= u <= 1:
-            return (Px + t * Rx, Py + t * Ry), t
+    def _get_item_geom(self, item):
+        geom_type = getattr(item, 'geom_type', 'unknown')
+        try:
+            if geom_type in ('line', 'polyline'): return sg.LineString(item.coords)
+            elif geom_type == 'poly': 
+                coords = list(item.coords)
+                if coords[0] != coords[-1]: coords.append(coords[0]) 
+                return sg.LineString(coords)
+            elif geom_type == 'circle': return sg.Point(item.center).buffer(item.radius, resolution=64).exterior
+            elif geom_type == 'arc': return sg.LineString(item.get_geom_coords())
+        except: pass
         return None
 
-    def _get_extend_data(self, raw_point):
-        """解析器：获取当前鼠标悬停的直线，并发射射线寻找目标边界"""
-        target_item = self.canvas.scene().itemAt(raw_point, self.canvas.transform())
-        
-        # 目前只支持延伸单根直线，不直接延伸闭合多边形
-        if not isinstance(target_item, SmartLineItem):
-            return None, None, None, None
-
-        p1, p2 = target_item.coords
-        click_pt = (raw_point.x(), raw_point.y())
-        
-        # 判断鼠标离哪个端点更近，决定延伸方向
-        d1 = math.hypot(click_pt[0] - p1[0], click_pt[1] - p1[1])
-        d2 = math.hypot(click_pt[0] - p2[0], click_pt[1] - p2[1])
-
-        if d1 < d2:
-            # 离 p1 近，向 p1 方向延伸 (p2 -> p1)
-            origin = p1
-            direction = (p1[0] - p2[0], p1[1] - p2[1])
-            static_pt = p2
-        else:
-            # 离 p2 近，向 p2 方向延伸 (p1 -> p2)
-            origin = p2
-            direction = (p2[0] - p1[0], p2[1] - p1[1])
-            static_pt = p1
-
-        length = math.hypot(direction[0], direction[1])
-        if length < 1e-5: return None, None, None, None
-        
-        # 归一化方向向量
-        direction = (direction[0]/length, direction[1]/length)
-
-        # 收集场景中所有的边界线段
-        boundaries = []
+    def _get_boundaries(self, exclude_item):
+        """收集全图所有的图形作为可能的延伸边界墙壁"""
+        lines = []
         for item in self.canvas.scene().items():
-            if item == target_item: continue
-            if isinstance(item, SmartLineItem):
-                boundaries.append(item.coords)
-            elif isinstance(item, SmartPolygonItem):
-                coords = item.coords
-                for i in range(len(coords)):
-                    boundaries.append((coords[i], coords[(i+1)%len(coords)]))
+            if getattr(item, 'is_smart_shape', False) and item != exclude_item and item.isVisible():
+                geom = self._get_item_geom(item)
+                if geom and not geom.is_empty: lines.append(geom)
+        if not lines: return None
+        return sg.MultiLineString(lines) if len(lines) > 1 else lines[0]
 
-        # 寻找最近的交点
-        min_t = float('inf')
-        best_pt = None
+    def _get_extend_data(self, target_item, click_pos):
+        geom_type = getattr(target_item, 'geom_type', '')
+        # 封闭图形（圆、矩形）不能被延伸
+        if geom_type in ('poly', 'circle'): return None
 
-        for A, B in boundaries:
-            res = self._ray_intersect_segment(origin, direction, A, B)
-            if res:
-                pt, t = res
-                if t < min_t:
-                    min_t = t
-                    best_pt = pt
+        boundaries = self._get_boundaries(target_item)
+        if not boundaries: return None
 
-        if best_pt:
-            new_coords = [best_pt, p2] if d1 < d2 else [p1, best_pt]
-            return target_item, target_item.coords, new_coords, (origin, best_pt)
+        px, py = click_pos.x(), click_pos.y()
+        
+        # ==========================================
+        # 1. 直线与多段线的射线延伸逻辑
+        # ==========================================
+        if geom_type in ('line', 'polyline'):
+            coords = list(target_item.coords)
+            p_start, p_end = coords[0], coords[-1]
+            dist_to_start = math.hypot(px - p_start[0], py - p_start[1])
+            dist_to_end = math.hypot(px - p_end[0], py - p_end[1])
+            
+            # 判断往哪头延伸
+            if dist_to_start < dist_to_end:
+                idx_target = 0
+                vx, vy = coords[0][0] - coords[1][0], coords[0][1] - coords[1][1]
+            else:
+                idx_target = -1
+                vx, vy = coords[-1][0] - coords[-2][0], coords[-1][1] - coords[-2][1]
 
-        return None, None, None, None
+            length = math.hypot(vx, vy)
+            if length < 1e-4: return None
+            nx, ny = vx / length, vy / length
+            
+            # 发射一条长达 10000 像素的虚拟射线去撞墙
+            ray_start = coords[idx_target]
+            ray_end = (ray_start[0] + nx * 10000, ray_start[1] + ny * 10000)
+            ray_line = sg.LineString([ray_start, ray_end])
+            
+            intersections = ray_line.intersection(boundaries)
+            if intersections.is_empty: return None
 
-    def mouseMoveEvent(self, event, final_point, snapped_angle):
-        raw_point = self.canvas.mapToScene(event.pos())
-        target_item, _, _, extend_segment = self._get_extend_data(raw_point)
+            def extract_points(g):
+                pts = []
+                if g.is_empty: return pts
+                if g.geom_type == 'Point': pts.append(g)
+                elif g.geom_type == 'MultiPoint': pts.extend(list(g.geoms))
+                elif g.geom_type == 'GeometryCollection':
+                    for sub_g in g.geoms: pts.extend(extract_points(sub_g))
+                return pts
 
-        if extend_segment:
-            if not self.preview_ghost:
-                self.preview_ghost = QGraphicsLineItem()
-                pen = QPen(QColor(0, 255, 0, 220), 2.5, Qt.PenStyle.DashLine) # 绿色粗虚线表示将要生长的部分
-                pen.setCosmetic(True)
-                self.preview_ghost.setPen(pen)
-                self.preview_ghost.setZValue(5000)
-                self.canvas.scene().addItem(self.preview_ghost)
+            pts = extract_points(intersections)
+            if not pts: return None
+
+            # 找出正前方最近的那个交点（墙壁）
+            min_dist = float('inf')
+            best_pt = None
+            ray_start_pt = sg.Point(*ray_start)
+            for pt in pts:
+                dist = pt.distance(ray_start_pt)
+                if 1e-3 < dist < min_dist:  # 排除起点自身的微小误差
+                    # 检查是否在正方向
+                    dot_product = (pt.x - ray_start[0])*nx + (pt.y - ray_start[1])*ny
+                    if dot_product > 0:
+                        min_dist = dist
+                        best_pt = (pt.x, pt.y)
+
+            if not best_pt: return None
+
+            new_coords = list(coords)
+            new_coords[idx_target] = best_pt
+            return {'type': geom_type, 'coords': new_coords}
+
+        # ==========================================
+        # 2. 圆弧的轨道生长延伸逻辑
+        # ==========================================
+        elif geom_type == 'arc':
+            cx, cy = target_item.center
+            r = target_item.radius
+            sa, ea = target_item.start_angle, target_item.end_angle
+            
+            # 判断点击位置离圆弧的头近还是尾近
+            click_angle = math.degrees(math.atan2(-(py - cy), px - cx))
+            if click_angle < 0: click_angle += 360
+            
+            def diff_ccw(a, b): return (a - b) % 360.0
+            def diff_cw(a, b): return (b - a) % 360.0
+            
+            dist_to_sa = min(diff_ccw(click_angle, sa), diff_cw(click_angle, sa))
+            dist_to_ea = min(diff_ccw(click_angle, ea), diff_cw(click_angle, ea))
+            
+            is_extend_ccw = (dist_to_ea < dist_to_sa) # 往逆时针(end_angle)方向生长
+            
+            # 画一个完整的圆去探测墙壁
+            ring = sg.Point(cx, cy).buffer(r, resolution=64).exterior
+            intersections = ring.intersection(boundaries)
+            if intersections.is_empty: return None
+            
+            def extract_points(g):
+                pts = []
+                if g.is_empty: return pts
+                if g.geom_type == 'Point': pts.append(g)
+                elif g.geom_type == 'MultiPoint': pts.extend(list(g.geoms))
+                elif g.geom_type == 'GeometryCollection':
+                    for sub_g in g.geoms: pts.extend(extract_points(sub_g))
+                return pts
+
+            pts = extract_points(intersections)
+            if not pts: return None
+
+            best_angle = None
+            min_diff = 360.0
+            
+            for pt in pts:
+                pt_a = math.degrees(math.atan2(-(pt.y - cy), pt.x - cx))
+                if pt_a < 0: pt_a += 360
                 
-            p1, p2 = extend_segment
-            self.preview_ghost.setLine(QLineF(p1[0], p1[1], p2[0], p2[1]))
-            self.preview_ghost.show()
-        else:
-            if self.preview_ghost:
-                self.preview_ghost.hide()
+                if is_extend_ccw:
+                    diff = diff_ccw(pt_a, ea)
+                    if 0.1 < diff < min_diff: # 排除自身误差
+                        min_diff = diff
+                        best_angle = pt_a
+                else:
+                    diff = diff_cw(pt_a, sa)
+                    if 0.1 < diff < min_diff:
+                        min_diff = diff
+                        best_angle = pt_a
+
+            if best_angle is None: return None
+            
+            if is_extend_ccw: return {'type': 'arc', 'center': (cx, cy), 'radius': r, 'sa': sa, 'ea': best_angle}
+            else: return {'type': 'arc', 'center': (cx, cy), 'radius': r, 'sa': best_angle, 'ea': ea}
+
+        return None
+
+    def _update_preview(self, final_point):
+        # 【X光透视寻找图形】
+        lod = self.canvas.transform().m11()
+        hit_size = 10.0 / lod if lod > 0 else 10.0
+        rect = QRectF(final_point.x() - hit_size/2, final_point.y() - hit_size/2, hit_size, hit_size)
+        items = self.canvas.scene().items(rect, Qt.ItemSelectionMode.IntersectsItemShape, Qt.SortOrder.DescendingOrder, self.canvas.transform())
+        
+        target_item = None
+        for it in items:
+            if getattr(it, 'is_smart_shape', False):
+                target_item = it; break
                 
-        return True
+        if not target_item:
+            self._cleanup_ghost()
+            return
+
+        data = self._get_extend_data(target_item, final_point)
+        self.current_extend_data = {'item': target_item, 'data': data} if data else None
+
+        if not data:
+            self._cleanup_ghost()
+            return
+            
+        if not self.ghost_item:
+            self.ghost_item = QGraphicsPathItem()
+            pen = QPen(QColor(0, 255, 0, 200), 2, Qt.PenStyle.DashLine) # 醒目的绿色虚线预览
+            pen.setCosmetic(True)
+            self.ghost_item.setPen(pen)
+            self.ghost_item.setZValue(5000)
+            self.canvas.scene().addItem(self.ghost_item)
+            
+        path = QPainterPath()
+        if data['type'] in ('line', 'polyline'):
+            coords = data['coords']
+            path.moveTo(QPointF(*coords[0]))
+            for x, y in coords[1:]: path.lineTo(QPointF(x, y))
+        elif data['type'] == 'arc':
+            c, r = data['center'], data['radius']
+            sa, ea = data['sa'], data['ea']
+            rect = QRectF(c[0]-r, c[1]-r, 2*r, 2*r)
+            span = ea - sa
+            if span <= 0: span += 360
+            path.arcMoveTo(rect, sa)
+            path.arcTo(rect, sa, span)
+            
+        self.ghost_item.setPath(path)
+        self.ghost_item.show()
 
     def mousePressEvent(self, event, final_point, snapped_angle):
         if event.button() == Qt.MouseButton.LeftButton:
-            raw_point = self.canvas.mapToScene(event.pos())
-            target_item, old_coords, new_coords, _ = self._get_extend_data(raw_point)
-            
-            if target_item and new_coords:
-                cmd = CommandExtendGeom(target_item, old_coords, new_coords)
+            if self.current_extend_data and self.current_extend_data['data']:
+                item = self.current_extend_data['item']
+                data = self.current_extend_data['data']
+                
+                if data['type'] == 'line':
+                    new_item = SmartLineItem(data['coords'][0], data['coords'][1])
+                elif data['type'] == 'polyline':
+                    new_item = SmartPolylineItem(data['coords'])
+                elif data['type'] == 'arc':
+                    new_item = SmartArcItem(data['center'], data['radius'], data['sa'], data['ea'])
+                    
+                cmd = CommandExtendGeom(self.canvas.scene(), item, new_item, self.canvas.layer_manager)
                 self.canvas.undo_stack.push(cmd)
+                self._cleanup_ghost()
                 
-                self._cleanup_preview()
-                self.canvas.viewport().update()
-                
+            self.canvas.scene().clearSelection()
             return True
             
         elif event.button() == Qt.MouseButton.RightButton:
+            self.deactivate()
             self.canvas.switch_tool("选择")
             return True
         return False
-        
+
+    def mouseMoveEvent(self, event, final_point, snapped_angle):
+        self._update_hud()
+        self._update_preview(final_point)
+        return True
+
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
-            self.canvas.switch_tool("选择")
+            self.deactivate(); self.canvas.switch_tool("选择")
             return True
         return False

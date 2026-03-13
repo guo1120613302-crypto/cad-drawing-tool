@@ -6,7 +6,7 @@ import math
 import traceback
 
 from utils.geom_engine import GeometryEngine
-from core.core_items import SmartLineItem, SmartPolygonItem, SmartDimensionItem
+from core.core_items import SmartLineItem, SmartPolygonItem, SmartDimensionItem, SmartCircleItem, SmartPolylineItem
 
 from managers.color_manager import ColorManager
 from managers.layer_manager import LayerManager
@@ -23,6 +23,8 @@ from tools.tool_rotate import RotateTool
 from tools.tool_mirror import MirrorTool
 from tools.tool_move import MoveTool
 from tools.tool_dimension import DimensionTool
+from tools.tool_circle import CircleTool
+from tools.tool_polyline import PolylineTool
 
 class CommandPasteGeom(QUndoCommand):
     """复制粘贴对应的撤销栈封装"""
@@ -34,10 +36,14 @@ class CommandPasteGeom(QUndoCommand):
             ItemClass = d['type']
             new_c = [(x + 50, y + 50) for x, y in d['coords']] 
             
-            if ItemClass == SmartPolygonItem:
+            if ItemClass == SmartPolygonItem or ItemClass == SmartPolylineItem:
                 item = ItemClass(new_c)
             elif ItemClass == SmartDimensionItem:
                 item = ItemClass(new_c[0], new_c[1], new_c[2])
+            elif ItemClass == SmartCircleItem:
+                # 兼容圆的粘贴
+                r = math.hypot(new_c[1][0]-new_c[0][0], new_c[1][1]-new_c[0][1])
+                item = ItemClass(new_c[0], r)
             else:
                 item = ItemClass(new_c[0], new_c[1])
                 
@@ -49,8 +55,7 @@ class CommandPasteGeom(QUndoCommand):
     def redo(self):
         self.scene.clearSelection()
         for item in self.created_items:
-            if item not in self.scene.items():
-                self.scene.addItem(item)
+            if item not in self.scene.items(): self.scene.addItem(item)
             item.setSelected(True)
             
     def undo(self):
@@ -60,10 +65,9 @@ class CommandPasteGeom(QUndoCommand):
                 self.scene.removeItem(item)
 
 class HUDProxy:
-    """【智能 HUD 代理】：分离顶部固定提示和跟随光标的极轴信息，彻底解决缩放失真"""
+    """【智能 HUD 代理】：分离顶部固定提示和跟随光标的极轴信息"""
     def __init__(self, canvas):
         self.canvas = canvas
-        
         self.real_polar_item = QGraphicsTextItem()
         self.real_polar_item.setZValue(1000)
         self.real_polar_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
@@ -77,10 +81,7 @@ class HUDProxy:
         self.instruction_label.hide()
         
     def show(self): pass 
-        
-    def hide(self):
-        self.real_polar_item.hide()
-        
+    def hide(self): self.real_polar_item.hide()
     def hide_all(self):
         self.real_polar_item.hide()
         self.instruction_label.hide()
@@ -100,8 +101,7 @@ class HUDProxy:
             x = x.x()
         self.real_polar_item.setPos(x, y)
         
-    def toPlainText(self):
-        return self.real_polar_item.toPlainText()
+    def toPlainText(self): return self.real_polar_item.toPlainText()
 
 
 class CADGraphicsView(QGraphicsView):
@@ -130,10 +130,13 @@ class CADGraphicsView(QGraphicsView):
         
         self._init_global_ui_components()
 
+        # 挂载新工具
         self.tools = {
             "选择": SelectTool(self),
             "直线": LineTool(self),
+            "多段线": PolylineTool(self),
             "矩形": RectTool(self),
+            "圆": CircleTool(self),
             "偏移": OffsetTool(self),
             "旋转": RotateTool(self),
             "镜像": MirrorTool(self),
@@ -198,10 +201,8 @@ class CADGraphicsView(QGraphicsView):
 
     def switch_tool(self, tool_name):
         if tool_name in self.tools:
-            if self.current_tool:
-                self.current_tool.deactivate()
+            if self.current_tool: self.current_tool.deactivate()
             self._cleanup_tracking_huds()
-           
             self.current_tool = self.tools[tool_name]
             self.current_tool.activate()
             
@@ -219,13 +220,9 @@ class CADGraphicsView(QGraphicsView):
         self.track_marker_v.hide()
         self.hud_length.hide()
         self.hud_angle.hide()
-        
         if hasattr(self, 'hud_polar_info'):
-            if hasattr(self.hud_polar_info, 'hide_all'):
-                self.hud_polar_info.hide_all()
-            else:
-                self.hud_polar_info.hide()
-                
+            if hasattr(self.hud_polar_info, 'hide_all'): self.hud_polar_info.hide_all()
+            else: self.hud_polar_info.hide()
         self.snap_marker.hide()
         self.hud_snap_tip.hide()
 
@@ -270,7 +267,6 @@ class CADGraphicsView(QGraphicsView):
         
         grip_size = 6.0 / lod 
         half_size = grip_size / 2.0
-        
         hot_grip_size = 2.0 / lod 
         half_hot_size = hot_grip_size / 2.0
         
@@ -279,7 +275,8 @@ class CADGraphicsView(QGraphicsView):
         painter.setPen(pen)
         
         for item in selected_items:
-            if isinstance(item, (SmartLineItem, SmartPolygonItem, SmartDimensionItem)):
+            # 兼容所有实体夹点渲染
+            if getattr(item, 'is_smart_shape', False):
                 hot_idx = getattr(item, 'hot_grip_index', -1)
                 for i, (gx, gy) in enumerate(item.get_grips()):
                     if i == hot_idx:
@@ -290,20 +287,16 @@ class CADGraphicsView(QGraphicsView):
                         painter.drawRect(QRectF(gx - half_size, gy - half_size, grip_size, grip_size))
 
     def _get_snapped_endpoint(self, raw_point):
-        """【V2.0 终极磁吸引擎】：加入移动包围盒/夹点的幽灵对齐(Ghost Snapping)"""
         snap_threshold = 10.0 / self.transform().m11() 
         closest_dist = float('inf')
-        snapped_p = None
-        marker_p = None
+        snapped_p, marker_p = None, None
         snap_type = "端点"
         
         raw_x, raw_y = raw_point.x(), raw_point.y()
         valid_items = []
         active_tool = self.current_tool
 
-        # 【核心 1】：找出当前正在被移动的对象，防止其原位置产生“死死吸住”的自吸附 Bug
-        exclude_items = []
-        moving_grips = []
+        exclude_items, moving_grips = [], []
         base_point = None
 
         if isinstance(active_tool, SelectTool) and active_tool.is_moving and active_tool.move_start_pos:
@@ -315,83 +308,62 @@ class CADGraphicsView(QGraphicsView):
             base_point = active_tool.base_point
             for item in exclude_items: moving_grips.extend(item.get_grips())
 
-        # 获取地图上所有静态的有效几何图形
         for item in self.scene().items():
-            if not item.isVisible(): continue  # 忽略被隐藏的图形
-            if item in exclude_items: continue # 忽略正在被移动的本体图形
-            
-            if isinstance(item, (SmartLineItem, SmartPolygonItem, SmartDimensionItem)):
-                if active_tool and hasattr(active_tool, 'temp_item') and item == getattr(active_tool, 'temp_item', None):
-                    continue
+            if not item.isVisible() or item in exclude_items: continue 
+            if getattr(item, 'is_smart_shape', False):
+                if active_tool and hasattr(active_tool, 'temp_item') and item == getattr(active_tool, 'temp_item', None): continue
                 valid_items.append(item)
 
         static_grips = []
-        for item in valid_items:
-            static_grips.extend(item.get_grips())
+        for item in valid_items: static_grips.extend(item.get_grips())
+        
+        # 【新增】支持多段线工具的临时点吸附
+        if hasattr(active_tool, 'points') and active_tool.__class__.__name__ == 'PolylineTool':
+            for pt in active_tool.points:
+                static_grips.append(pt)
 
-        # 【逻辑 1】：基础捕捉 —— 鼠标光标靠近静态端点
         for gx, gy in static_grips:
             dist = math.hypot(gx - raw_x, gy - raw_y)
             if dist < snap_threshold and dist < closest_dist:
-                closest_dist = dist
-                snapped_p = QPointF(gx, gy)
-                marker_p = QPointF(gx, gy) # 绿框画在这里
-                snap_type = "端点"
+                closest_dist = dist; snapped_p = QPointF(gx, gy); marker_p = QPointF(gx, gy); snap_type = "端点"
 
-        # 【逻辑 2 黑科技】：幽灵对齐捕捉 —— 移动图形时，自动探测其边界是否撞到静态物体
         if base_point and moving_grips:
-            dx = raw_x - base_point.x()
-            dy = raw_y - base_point.y()
-            
+            dx, dy = raw_x - base_point.x(), raw_y - base_point.y()
             for mgx, mgy in moving_grips:
-                # 预测移动图形的角点位置
-                proj_x = mgx + dx
-                proj_y = mgy + dy
-                
-                # 检查这些角点是否撞到了环境里的静态角点
+                proj_x, proj_y = mgx + dx, mgy + dy
                 for sgx, sgy in static_grips:
                     dist = math.hypot(proj_x - sgx, proj_y - sgy)
                     if dist < snap_threshold and dist < closest_dist:
                         closest_dist = dist
-                        
-                        # 核心公式：反推鼠标此刻应该在的绝对位置，以保证两个角点 100% 重合！
-                        corrected_mouse_x = sgx - mgx + base_point.x()
-                        corrected_mouse_y = sgy - mgy + base_point.y()
-                        
-                        snapped_p = QPointF(corrected_mouse_x, corrected_mouse_y)
-                        marker_p = QPointF(sgx, sgy) # 绿框直接挂载在两个物体碰撞的那个角上
+                        snapped_p = QPointF(sgx - mgx + base_point.x(), sgy - mgy + base_point.y())
+                        marker_p = QPointF(sgx, sgy)
                         snap_type = "对齐"
 
-        # 【逻辑 3】：高级真实交点捕捉
+        # 【黑科技交点】：圆与多段线的相交不需要修改底层 Shapely 引擎，通过 get_geom_coords 直接映射！
         for i in range(len(valid_items)):
             for j in range(i + 1, len(valid_items)):
                 item1, item2 = valid_items[i], valid_items[j]
-                if isinstance(item1, SmartDimensionItem) or isinstance(item2, SmartDimensionItem):
-                    continue
+                if isinstance(item1, SmartDimensionItem) or isinstance(item2, SmartDimensionItem): continue
                 if item1.boundingRect().intersects(item2.boundingRect()):
-                    is_poly1 = isinstance(item1, SmartPolygonItem)
-                    is_poly2 = isinstance(item2, SmartPolygonItem)
-                    intersections = GeometryEngine.get_intersections(
-                        item1.coords, item2.coords, is_poly1, is_poly2
-                    )
+                    is_poly1 = isinstance(item1, (SmartPolygonItem, SmartCircleItem))
+                    is_poly2 = isinstance(item2, (SmartPolygonItem, SmartCircleItem))
+                    
+                    coords1 = item1.get_geom_coords() if hasattr(item1, 'get_geom_coords') else item1.coords
+                    coords2 = item2.get_geom_coords() if hasattr(item2, 'get_geom_coords') else item2.coords
+                    
+                    intersections = GeometryEngine.get_intersections(coords1, coords2, is_poly1, is_poly2)
                     for ix, iy in intersections:
                         dist = math.hypot(ix - raw_x, iy - raw_y)
                         if dist < snap_threshold and dist < closest_dist:
-                            closest_dist = dist
-                            snapped_p = QPointF(ix, iy)
-                            marker_p = QPointF(ix, iy)
-                            snap_type = "交点"
+                            closest_dist = dist; snapped_p = QPointF(ix, iy); marker_p = QPointF(ix, iy); snap_type = "交点"
 
-        # 返回 3 个值：(矫正后的鼠标坐标, 捕捉类型文字, 绿框应该绘制的绝对坐标)
-        if snapped_p:
-            return snapped_p, snap_type, marker_p
+        if snapped_p: return snapped_p, snap_type, marker_p
         return None
 
     def _calculate_global_snap(self, raw_point):
         final_point = QPointF(raw_point)
         snap_threshold_scene = 10.0 / self.transform().m11() 
         
-        # 接收改良后的 3 参数返回值
         snapped_res = self._get_snapped_endpoint(raw_point)
         snapped_p = snapped_res[0] if snapped_res else None
         snap_type = snapped_res[1] if snapped_res else "端点"
@@ -402,35 +374,27 @@ class CADGraphicsView(QGraphicsView):
         if lod <= 0: lod = 1.0
         
         if snapped_p and marker_p:
-            final_point = QPointF(snapped_p) # 将最终光标/物体的计算点锚定！
+            final_point = QPointF(snapped_p)
             is_object_snapped = True
-            self.acquired_point = QPointF(marker_p) # 极轴追踪从物体碰撞的角点开始
-            
-            # 【完美挂载点】：把吸附绿框永远画在被吸附的角上，而不是鼠标光标下！
+            self.acquired_point = QPointF(marker_p)
             self.snap_marker.setPos(marker_p)
             self.hud_snap_tip.setHtml(f"<div style='background-color:#555555; color:white; padding:1px 3px; font-size:11px;'>{snap_type}</div>")
             self.hud_snap_tip.setPos(marker_p.x() + 8 / lod, marker_p.y() + 8 / lod)
             self.snap_marker.show()
             self.hud_snap_tip.show()
         else:
-            self.snap_marker.hide()
-            self.hud_snap_tip.hide()
+            self.snap_marker.hide(); self.hud_snap_tip.hide()
 
         ref_point = self.current_tool.get_reference_point()
         
         if not ref_point:
-            self.polar_line.hide()
-            self.tracking_line.hide()
-            self.track_marker_h.hide()
-            self.track_marker_v.hide()
-            self.hud_length.hide()
-            self.hud_angle.hide()
+            self.polar_line.hide(); self.tracking_line.hide()
+            self.track_marker_h.hide(); self.track_marker_v.hide()
+            self.hud_length.hide(); self.hud_angle.hide(); self.hud_polar_info.hide() 
             return final_point, 0.0
 
-        snap_x = final_point.x()
-        snap_y = final_point.y()
-        is_polar_h = is_polar_v = False
-        is_track_h = is_track_v = False
+        snap_x, snap_y = final_point.x(), final_point.y()
+        is_polar_h = is_polar_v = is_track_h = is_track_v = False
         polar_angle = track_angle = 0.0
         
         if not is_object_snapped:
@@ -440,28 +404,18 @@ class CADGraphicsView(QGraphicsView):
                     dist_v_track = abs(snap_x - self.acquired_point.x())
 
                     if dist_h_track < snap_threshold_scene:
-                        is_track_h = True
-                        snap_y = self.acquired_point.y()
-                        track_angle = 0.0 if snap_x >= self.acquired_point.x() else 180.0
+                        is_track_h = True; snap_y = self.acquired_point.y(); track_angle = 0.0 if snap_x >= self.acquired_point.x() else 180.0
                     elif dist_v_track < snap_threshold_scene:
-                        is_track_v = True
-                        snap_x = self.acquired_point.x()
-                        track_angle = 90.0 if snap_y <= self.acquired_point.y() else 270.0
+                        is_track_v = True; snap_x = self.acquired_point.x(); track_angle = 90.0 if snap_y <= self.acquired_point.y() else 270.0
 
-            dist_h_polar = abs(snap_y - ref_point.y())
-            dist_v_polar = abs(snap_x - ref_point.x())
+            dist_h_polar = abs(snap_y - ref_point.y()); dist_v_polar = abs(snap_x - ref_point.x())
 
             if dist_h_polar < snap_threshold_scene:
-                is_polar_h = True
-                snap_y = ref_point.y()
-                polar_angle = 0.0 if snap_x >= ref_point.x() else 180.0
+                is_polar_h = True; snap_y = ref_point.y(); polar_angle = 0.0 if snap_x >= ref_point.x() else 180.0
             elif dist_v_polar < snap_threshold_scene:
-                is_polar_v = True
-                snap_x = ref_point.x()
-                polar_angle = 90.0 if snap_y <= ref_point.y() else 270.0
+                is_polar_v = True; snap_x = ref_point.x(); polar_angle = 90.0 if snap_y <= ref_point.y() else 270.0
 
-            final_point.setX(snap_x)
-            final_point.setY(snap_y)
+            final_point.setX(snap_x); final_point.setY(snap_y)
 
         raw_length = math.hypot(final_point.x() - ref_point.x(), final_point.y() - ref_point.y())
         if is_polar_h or is_polar_v: snapped_angle = polar_angle
@@ -471,27 +425,19 @@ class CADGraphicsView(QGraphicsView):
 
         if is_polar_h or is_polar_v:
             rad = math.radians(polar_angle)
-            p_end_x = ref_point.x() + 10000 * math.cos(rad)
-            p_end_y = ref_point.y() - 10000 * math.sin(rad)
-            p_start_x = ref_point.x() - 10000 * math.cos(rad)
-            p_start_y = ref_point.y() + 10000 * math.sin(rad)
-            self.polar_line.setLine(QLineF(p_start_x, p_start_y, p_end_x, p_end_y))
-            self.polar_line.show()
+            p_end_x = ref_point.x() + 10000 * math.cos(rad); p_end_y = ref_point.y() - 10000 * math.sin(rad)
+            p_start_x = ref_point.x() - 10000 * math.cos(rad); p_start_y = ref_point.y() + 10000 * math.sin(rad)
+            self.polar_line.setLine(QLineF(p_start_x, p_start_y, p_end_x, p_end_y)); self.polar_line.show()
         else: self.polar_line.hide()
             
         if is_track_h or is_track_v:
-            m_x, m_y = self.acquired_point.x(), self.acquired_point.y()
-            cross_size = 5.0 / lod
+            m_x, m_y = self.acquired_point.x(), self.acquired_point.y(); cross_size = 5.0 / lod
             self.track_marker_h.setLine(m_x - cross_size, m_y, m_x + cross_size, m_y)
             self.track_marker_v.setLine(m_x, m_y - cross_size, m_x, m_y + cross_size)
-            self.track_marker_h.show()
-            self.track_marker_v.show()
-            self.tracking_line.setLine(QLineF(m_x, m_y, final_point.x(), final_point.y()))
-            self.tracking_line.show()
+            self.track_marker_h.show(); self.track_marker_v.show()
+            self.tracking_line.setLine(QLineF(m_x, m_y, final_point.x(), final_point.y())); self.tracking_line.show()
         else:
-            self.tracking_line.hide()
-            self.track_marker_h.hide()
-            self.track_marker_v.hide()
+            self.tracking_line.hide(); self.track_marker_h.hide(); self.track_marker_v.hide()
 
         tool_buffer = self.current_tool.get_input_buffer()
         display_length = tool_buffer if tool_buffer else f"{raw_length:.4f}"
@@ -499,10 +445,8 @@ class CADGraphicsView(QGraphicsView):
         hud_text = f"极轴追踪: {display_length} < {snapped_angle:.0f}°"
         
         if (is_polar_h or is_polar_v) and (is_track_h or is_track_v):
-            hud_text = f"交点 | 极轴: < {polar_angle:.0f}°, 端点: < {track_angle:.0f}°"
-            hud_bg_color = "#8b9dc3"
-        elif is_polar_h or is_polar_v:
-            hud_text = f"极轴: {display_length} < {polar_angle:.0f}°"
+            hud_text = f"交点 | 极轴: < {polar_angle:.0f}°, 端点: < {track_angle:.0f}°"; hud_bg_color = "#8b9dc3"
+        elif is_polar_h or is_polar_v: hud_text = f"极轴: {display_length} < {polar_angle:.0f}°"
         elif is_track_h or is_track_v:
             track_dist = math.hypot(final_point.x() - self.acquired_point.x(), final_point.y() - self.acquired_point.y())
             hud_text = f"延长线: {track_dist:.4f} < {track_angle:.0f}°"
@@ -511,7 +455,6 @@ class CADGraphicsView(QGraphicsView):
             self.hud_length.setHtml(f"<div style='background-color:#0055ff; color:white; padding:2px 4px; border:1px solid white; font-family:Arial; font-size:12px;'>{display_length}</div>")
             self.hud_angle.setHtml(f"<div style='background-color:#c0c0c0; color:black; padding:2px 4px; border:1px solid black; font-family:Arial; font-size:12px;'>{snapped_angle:.0f}°</div>")
             
-            # 【完美挂载点】：如果是对齐模式，把数据框也挂在碰撞的角点附近！
             anchor_p = marker_p if (is_object_snapped and marker_p) else final_point
             self.hud_length.setPos(anchor_p.x() - 60 / lod, anchor_p.y() - 25 / lod)
             self.hud_angle.setPos(anchor_p.x() + 15 / lod, anchor_p.y() + 15 / lod)
@@ -519,17 +462,13 @@ class CADGraphicsView(QGraphicsView):
             self.hud_polar_info.setHtml(f"<div style='background-color:{hud_bg_color}; color:black; padding:2px 4px; border:1px solid black; font-family:Arial; font-size:12px;'>{hud_text}</div>")
             self.hud_polar_info.setPos(anchor_p.x() + 50 / lod, anchor_p.y() + 15 / lod)
             
-            self.hud_length.show()
-            self.hud_angle.show()
+            self.hud_length.show(); self.hud_angle.show()
         else:
-            self.hud_length.hide()
-            self.hud_angle.hide()
-            self.hud_polar_info.hide()
+            self.hud_length.hide(); self.hud_angle.hide(); self.hud_polar_info.hide()
 
         if hasattr(self.main_window, 'lbl_transform_info'):
             info_text = f" 当前坐标与尺寸提示  |  X: {final_point.x():.2f}   Y: {-final_point.y():.2f}   长度: {raw_length:.2f}   角度: {snapped_angle:.2f} "
             self.main_window.lbl_transform_info.setText(info_text)
-
         return final_point, snapped_angle
 
     def wheelEvent(self, event):
@@ -539,43 +478,28 @@ class CADGraphicsView(QGraphicsView):
             zoom_factor = zoom_in_factor if event.angleDelta().y() > 0 else zoom_out_factor
             mouse_pos = event.position().toPoint()
             old_scene_pos = self.mapToScene(mouse_pos)
-            
             self.scale(zoom_factor, zoom_factor)
             new_scene_pos = self.mapToScene(mouse_pos)
             delta = new_scene_pos - old_scene_pos
             self.translate(delta.x(), delta.y())
-            
             current_point = self.mapToScene(mouse_pos)
             final_point, snapped_angle = self._calculate_global_snap(current_point)
-            
             class DummyEvent:
                 def pos(self): return mouse_pos
-            if self.current_tool:
-                self.current_tool.mouseMoveEvent(DummyEvent(), final_point, snapped_angle)
-        except Exception as e:
-            traceback.print_exc()
+            if self.current_tool: self.current_tool.mouseMoveEvent(DummyEvent(), final_point, snapped_angle)
+        except Exception as e: traceback.print_exc()
 
     def mousePressEvent(self, event):
         try:
             if event.button() == Qt.MouseButton.MiddleButton:
-                self._is_panning = True
-                self._pan_start_pos = event.pos()
-                self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
-                event.accept()
-                return
-                
+                self._is_panning = True; self._pan_start_pos = event.pos(); self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor); event.accept(); return
             self.setFocus() 
             current_point = self.mapToScene(event.pos())
             final_point, snapped_angle = self._calculate_global_snap(current_point)
-            
             handled = False
-            if self.current_tool:
-                handled = self.current_tool.mousePressEvent(event, final_point, snapped_angle)
-                
-            if not handled:
-                super().mousePressEvent(event)
-        except Exception as e:
-            traceback.print_exc()
+            if self.current_tool: handled = self.current_tool.mousePressEvent(event, final_point, snapped_angle)
+            if not handled: super().mousePressEvent(event)
+        except Exception as e: traceback.print_exc()
 
     def mouseMoveEvent(self, event):
         try:
@@ -583,41 +507,25 @@ class CADGraphicsView(QGraphicsView):
                 delta = event.pos() - self._pan_start_pos
                 self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
                 self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
-                self._pan_start_pos = event.pos()
-                event.accept()
-                return
-
+                self._pan_start_pos = event.pos(); event.accept(); return
             self.last_cursor_point = self.mapToScene(event.pos())
             final_point, snapped_angle = self._calculate_global_snap(self.last_cursor_point)
-            
             handled = False
-            if self.current_tool:
-                handled = self.current_tool.mouseMoveEvent(event, final_point, snapped_angle)
-                
-            if not handled:
-                super().mouseMoveEvent(event)
-        except Exception as e:
-            traceback.print_exc()
+            if self.current_tool: handled = self.current_tool.mouseMoveEvent(event, final_point, snapped_angle)
+            if not handled: super().mouseMoveEvent(event)
+        except Exception as e: traceback.print_exc()
 
     def mouseReleaseEvent(self, event):
         try:
             if event.button() == Qt.MouseButton.MiddleButton:
                 self._is_panning = False
-                if self.current_tool: 
-                    self.current_tool.activate() 
-                event.accept()
-                return
-                
+                if self.current_tool: self.current_tool.activate() 
+                event.accept(); return
             final_point, snapped_angle = self._calculate_global_snap(self.mapToScene(event.pos()))
-            
             handled = False
-            if self.current_tool:
-                handled = self.current_tool.mouseReleaseEvent(event, final_point, snapped_angle)
-                
-            if not handled:
-                super().mouseReleaseEvent(event)
-        except Exception as e:
-            traceback.print_exc()
+            if self.current_tool: handled = self.current_tool.mouseReleaseEvent(event, final_point, snapped_angle)
+            if not handled: super().mouseReleaseEvent(event)
+        except Exception as e: traceback.print_exc()
 
     def keyPressEvent(self, event: QKeyEvent):
         try:
@@ -625,34 +533,22 @@ class CADGraphicsView(QGraphicsView):
                 selected = self.scene().selectedItems()
                 self.clipboard_data.clear()
                 for item in selected:
-                    if isinstance(item, (SmartLineItem, SmartPolygonItem, SmartDimensionItem)):
+                    if getattr(item, 'is_smart_shape', False):
                         self.clipboard_data.append({'type': type(item), 'coords': list(item.coords)})
                 return
-                
             elif event.matches(QKeySequence.StandardKey.Paste):
                 if self.clipboard_data:
-                    cmd = CommandPasteGeom(self.scene(), self.clipboard_data)
-                    self.undo_stack.push(cmd)
+                    cmd = CommandPasteGeom(self.scene(), self.clipboard_data); self.undo_stack.push(cmd)
                 return
-                
             elif event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_R:
-                self.switch_tool("旋转")
-                return
-
+                self.switch_tool("旋转"); return
             if event.matches(QKeySequence.StandardKey.Undo):
-                self.undo_stack.undo()
-                self.scene().clearSelection()
-                self._calculate_global_snap(self.last_cursor_point)
-                return
+                self.undo_stack.undo(); self.scene().clearSelection(); self._calculate_global_snap(self.last_cursor_point); return
             elif event.matches(QKeySequence.StandardKey.Redo):
-                self.undo_stack.redo()
-                self.scene().clearSelection()
-                self._calculate_global_snap(self.last_cursor_point)
-                return
+                self.undo_stack.redo(); self.scene().clearSelection(); self._calculate_global_snap(self.last_cursor_point); return
             elif event.matches(QKeySequence.StandardKey.SelectAll):
                 for item in self.scene().items():
-                    if item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsSelectable:
-                        item.setSelected(True)
+                    if item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsSelectable: item.setSelected(True)
                 return
             elif event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
                 if self.current_tool and not self.current_tool.get_reference_point():
@@ -660,17 +556,10 @@ class CADGraphicsView(QGraphicsView):
                     if selected:
                         for item in selected:
                             if item in self.scene().items():
-                                item.setSelected(False)
-                                self.scene().removeItem(item)
+                                item.setSelected(False); self.scene().removeItem(item)
                         return
-                
             handled = False
-            if self.current_tool:
-                handled = self.current_tool.keyPressEvent(event)
-                
-            if handled:
-                self._calculate_global_snap(self.last_cursor_point)
-            else:
-                super().keyPressEvent(event)
-        except Exception as e:
-            traceback.print_exc()
+            if self.current_tool: handled = self.current_tool.keyPressEvent(event)
+            if handled: self._calculate_global_snap(self.last_cursor_point)
+            else: super().keyPressEvent(event)
+        except Exception as e: traceback.print_exc()

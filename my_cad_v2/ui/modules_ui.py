@@ -18,100 +18,80 @@ def generate_cad_style_icon(tool_type):
 
     if tool_type == "选择":
         cx, cy = 16, 16
-        painter.drawLine(cx, 6, cx, 26) 
-        painter.drawLine(6, cy, 26, cy)
+        painter.drawLine(cx, 6, cx, 26); painter.drawLine(6, cy, 26, cy)
         painter.drawLine(cx, 6, cx - 3, 9); painter.drawLine(cx, 6, cx + 3, 9)
         painter.drawLine(cx, 26, cx - 3, 23); painter.drawLine(cx, 26, cx + 3, 23)
         painter.drawLine(6, cy, 9, cy - 3); painter.drawLine(6, cy, 9, cy + 3)
         painter.drawLine(26, cy, 23, cy - 3); painter.drawLine(26, cy, 23, cy + 3)
     elif tool_type == "直线":
         painter.drawLine(ix, iy+ih, ix+iw, iy)
+    elif tool_type == "多段线":
+        painter.drawLine(6, 26, 12, 12)
+        painter.drawLine(12, 12, 20, 20)
+        painter.drawLine(20, 20, 26, 6)
+        # 画三个关键点
+        painter.drawEllipse(5, 25, 2, 2); painter.drawEllipse(11, 11, 2, 2)
+        painter.drawEllipse(19, 19, 2, 2); painter.drawEllipse(25, 5, 2, 2)
     elif tool_type == "矩形":
         painter.drawRect(ix, iy, iw, ih)
+    elif tool_type == "圆":
+        painter.drawEllipse(6, 6, 20, 20)
+        # 画出圆心
+        painter.drawLine(14, 16, 18, 16)
+        painter.drawLine(16, 14, 16, 18)
     elif tool_type == "偏移":
         pen_bold = QPen(QColor(255, 255, 255), 1.5) 
         painter.setPen(pen_bold)
-        painter.drawLine(ix, iy, ix+14, iy)
-        painter.drawLine(ix, iy, ix, iy+14)
-        painter.drawLine(ix+10, iy+10, ix+iw, iy+10)
-        painter.drawLine(ix+10, iy+10, ix+10, iy+ih)
+        painter.drawLine(ix, iy, ix+14, iy); painter.drawLine(ix, iy, ix, iy+14)
+        painter.drawLine(ix+10, iy+10, ix+iw, iy+10); painter.drawLine(ix+10, iy+10, ix+10, iy+ih)
     elif tool_type == "旋转":
         painter.drawArc(6, 6, 20, 20, 45 * 16, 270 * 16)
-        painter.drawLine(26, 16, 22, 12)
-        painter.drawLine(26, 16, 30, 12)
-        painter.drawPoint(16, 16)
+        painter.drawLine(26, 16, 22, 12); painter.drawLine(26, 16, 30, 12); painter.drawPoint(16, 16)
     elif tool_type == "镜像":
         pen_dash = QPen(QColor(255, 255, 255), 1, Qt.PenStyle.DashLine)
-        pen_dash.setCosmetic(True)
-        painter.setPen(pen_dash)
+        pen_dash.setCosmetic(True); painter.setPen(pen_dash)
         painter.drawLine(16, 4, 16, 28) 
         painter.setPen(pen)
         painter.drawLine(6, 8, 14, 16); painter.drawLine(14, 16, 6, 24); painter.drawLine(6, 24, 6, 8)
         painter.setPen(pen_dash)
         painter.drawLine(26, 8, 18, 16); painter.drawLine(18, 16, 26, 24); painter.drawLine(26, 24, 26, 8)
     elif tool_type == "修剪":
-        pen_solid = QPen(QColor(255, 255, 255), 1.5)
-        painter.setPen(pen_solid)
-        painter.drawLine(6, 16, 12, 16)
-        painter.drawLine(20, 16, 26, 16)
-        painter.drawLine(16, 6, 16, 26)
+        painter.drawLine(6, 16, 12, 16); painter.drawLine(20, 16, 26, 16); painter.drawLine(16, 6, 16, 26)
         pen_dash = QPen(QColor(255, 0, 0), 1.5, Qt.PenStyle.DashLine)
-        painter.setPen(pen_dash)
-        painter.drawLine(12, 16, 20, 16)
+        painter.setPen(pen_dash); painter.drawLine(12, 16, 20, 16)
     elif tool_type == "延伸":
-        pen_solid = QPen(QColor(255, 255, 255), 1.5)
-        painter.setPen(pen_solid)
-        painter.drawLine(24, 6, 24, 26) 
-        painter.drawLine(6, 16, 15, 16)
+        painter.drawLine(24, 6, 24, 26); painter.drawLine(6, 16, 15, 16)
         pen_dash = QPen(QColor(0, 255, 0), 1.5, Qt.PenStyle.DashLine)
-        painter.setPen(pen_dash)
-        painter.drawLine(15, 16, 24, 16)
+        painter.setPen(pen_dash); painter.drawLine(15, 16, 24, 16)
     elif tool_type == "打断":
-        pen_solid = QPen(QColor(255, 255, 255), 1.5)
-        painter.setPen(pen_solid)
-        painter.drawLine(4, 16, 12, 16) 
-        painter.drawLine(20, 16, 28, 16) 
-        pen_break = QPen(QColor(255, 165, 0), 1.5)
-        painter.setPen(pen_break)
-        painter.drawLine(16, 12, 16, 20)
-        painter.drawLine(12, 16, 20, 16)
+        painter.drawLine(4, 16, 12, 16); painter.drawLine(20, 16, 28, 16) 
+        pen_break = QPen(QColor(255, 165, 0), 1.5); painter.setPen(pen_break)
+        painter.drawLine(16, 12, 16, 20); painter.drawLine(12, 16, 20, 16)
     elif tool_type == "标注":
-        pen_solid = QPen(QColor(255, 255, 255), 1)
-        painter.setPen(pen_solid)
-        painter.drawLine(6, 6, 6, 26)
-        painter.drawLine(26, 6, 26, 26)
-        painter.drawLine(6, 16, 26, 16)
+        pen_solid = QPen(QColor(255, 255, 255), 1); painter.setPen(pen_solid)
+        painter.drawLine(6, 6, 6, 26); painter.drawLine(26, 6, 26, 26); painter.drawLine(6, 16, 26, 16)
         painter.drawLine(6, 16, 9, 13); painter.drawLine(6, 16, 9, 19)
         painter.drawLine(26, 16, 23, 13); painter.drawLine(26, 16, 23, 19)
-        font = painter.font()
-        font.setPointSize(6)
-        painter.setFont(font)
-        painter.drawText(12, 14, "10")
+        font = painter.font(); font.setPointSize(6); painter.setFont(font); painter.drawText(12, 14, "10")
         
     painter.end()
     return QIcon(pixmap)
 
 def create_menu_bar(main_window):
-    # 【核心视觉升级】：加入工具激活状态(checked)与图层整行高亮
     dark_night_theme = """
     QWidget { background-color: #333333; color: #FFFFFF; font-family: Arial, Microsoft YaHei; font-size: 12px; border: none; }
     QMenuBar { background-color: #222222; border-bottom: 1px solid #111111; padding-left: 5px; }
     QMenuBar::item { background-color: transparent; padding: 5px 10px; color: #BBBBBB; }
     QMenuBar::item:selected { background-color: #555555; color: #FFFFFF; }
-    
-    /* 工具栏变窄变瘦，加入经典 PS 选中态 */
     QToolBar { background-color: #2b2b2b; border-right: 1px solid #111111; padding: 1px; spacing: 1px; }
     QToolButton { background-color: transparent; padding: 4px; border: 1px solid transparent; border-radius: 3px; }
     QToolButton:hover { background-color: #444444; }
     QToolButton:checked { background-color: #1a1a1a; border: 1px solid #000000; } 
-    
     QDockWidget { background-color: #333333; color: #AAAAAA; font-weight: bold; titlebar-close-icon: url(none); titlebar-normal-icon: url(none); }
     QDockWidget::title { background-color: #2b2b2b; padding-left: 10px; padding-top: 6px; padding-bottom: 6px; border-bottom: 1px solid #111111; }
     QStatusBar { background-color: #111111; color: #888888; border-top: 1px solid #000000; padding-left: 5px; }
     QStatusBar QLabel { background-color: transparent; color: #AAAAAA; }
     QLineEdit { background-color: #1a1a1a; color: #FFFFFF; border: 1px solid #111111; border-radius: 2px; padding: 3px 5px; }
-    
-    /* 图层列表 PS 风格整行高亮 */
     QListWidget { background-color: #2b2b2b; color: #FFFFFF; border: none; outline: none; }
     QListWidget::item { border-bottom: 1px solid #222222; }
     QListWidget::item:selected { background-color: #4a4a4a; } 
@@ -122,30 +102,25 @@ def create_left_toolbox(main_window):
     toolbox = QToolBar("绘图工具")
     main_window.addToolBar(Qt.ToolBarArea.LeftToolBarArea, toolbox)
     toolbox.setMovable(False)
-    # 【修复 1】：缩小图标并拉紧间距，达成极窄工具栏
     toolbox.setIconSize(QSize(20, 20)) 
     
-    # 【修复 2】：使用 QActionGroup 强制管理工具排他性（单选按钮）
     ag = QActionGroup(main_window)
     ag.setExclusive(True)
 
-    tool_definitions = ["选择", "直线", "矩形", "偏移", "旋转", "镜像", "修剪", "延伸", "打断", "标注"]
+    # 挂载了 新增的 “圆”和“多段线”
+    tool_definitions = ["选择", "直线", "多段线", "矩形", "圆", "偏移", "旋转", "镜像", "修剪", "延伸", "打断", "标注"]
 
     for tool_name in tool_definitions:
         icon = generate_cad_style_icon(tool_name)
         action = QAction(icon, tool_name, main_window)
-        # 允许被 Check（高亮下陷）
         action.setCheckable(True)
-        if tool_name == "直线": 
-            action.setChecked(True) # 默认启动时高亮直线
+        if tool_name == "直线": action.setChecked(True) 
         
         ag.addAction(action)
         action.triggered.connect(lambda checked, name=tool_name: main_window.view_2d.switch_tool(name))
         toolbox.addAction(action)
         
-    # 保存 action 引用，方便后续按 Esc 退回选择工具时反向点亮按钮
     main_window.tool_actions = ag 
-        
     return toolbox
 
 def create_status_bar(main_window):
