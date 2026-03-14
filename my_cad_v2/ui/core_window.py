@@ -24,6 +24,10 @@ class CADWindow(QMainWindow):
         self.lib_dock = modules_ui.create_library_panel(self)
 
         self.arrange_default_layout()
+    
+    def contextMenuEvent(self, event):
+        # 完全禁用主窗口的右键菜单（包括工具栏区域）
+        event.ignore()
 
     def arrange_default_layout(self):
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.dock_2d)

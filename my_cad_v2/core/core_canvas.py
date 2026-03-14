@@ -25,6 +25,7 @@ from tools.tool_move import MoveTool
 from tools.tool_dimension import DimensionTool
 from tools.tool_circle import CircleTool
 from tools.tool_polyline import PolylineTool
+from tools.tool_arc import ArcTool
 
 class CommandPasteGeom(QUndoCommand):
     """复制粘贴对应的撤销栈封装"""
@@ -137,6 +138,7 @@ class CADGraphicsView(QGraphicsView):
             "多段线": PolylineTool(self),
             "矩形": RectTool(self),
             "圆": CircleTool(self),
+            "圆弧": ArcTool(self),
             "偏移": OffsetTool(self),
             "旋转": RotateTool(self),
             "镜像": MirrorTool(self),
@@ -322,10 +324,21 @@ class CADGraphicsView(QGraphicsView):
             for pt in active_tool.points:
                 static_grips.append(pt)
 
+        # 捕捉优先级（按CAD标准）：
+        # 1. 端点/夹点（最高优先级）
+        # 2. 交点
+        # 3. 最近点（最低优先级，只在没有其他捕捉时使用）
+        
+        # 第一步：收集所有可能的捕捉点
+        endpoint_candidates = []
+        intersection_candidates = []
+        nearest_candidates = []
+        
+        # 1. 收集端点和夹点
         for gx, gy in static_grips:
             dist = math.hypot(gx - raw_x, gy - raw_y)
-            if dist < snap_threshold and dist < closest_dist:
-                closest_dist = dist; snapped_p = QPointF(gx, gy); marker_p = QPointF(gx, gy); snap_type = "端点"
+            if dist < snap_threshold:
+                endpoint_candidates.append((dist, QPointF(gx, gy), QPointF(gx, gy), "端点"))
 
         if base_point and moving_grips:
             dx, dy = raw_x - base_point.x(), raw_y - base_point.y()
@@ -333,13 +346,15 @@ class CADGraphicsView(QGraphicsView):
                 proj_x, proj_y = mgx + dx, mgy + dy
                 for sgx, sgy in static_grips:
                     dist = math.hypot(proj_x - sgx, proj_y - sgy)
-                    if dist < snap_threshold and dist < closest_dist:
-                        closest_dist = dist
-                        snapped_p = QPointF(sgx - mgx + base_point.x(), sgy - mgy + base_point.y())
-                        marker_p = QPointF(sgx, sgy)
-                        snap_type = "对齐"
+                    if dist < snap_threshold:
+                        endpoint_candidates.append((
+                            dist,
+                            QPointF(sgx - mgx + base_point.x(), sgy - mgy + base_point.y()),
+                            QPointF(sgx, sgy),
+                            "对齐"
+                        ))
 
-        # 【黑科技交点】：圆与多段线的相交不需要修改底层 Shapely 引擎，通过 get_geom_coords 直接映射！
+        # 2. 收集交点
         for i in range(len(valid_items)):
             for j in range(i + 1, len(valid_items)):
                 item1, item2 = valid_items[i], valid_items[j]
@@ -354,10 +369,105 @@ class CADGraphicsView(QGraphicsView):
                     intersections = GeometryEngine.get_intersections(coords1, coords2, is_poly1, is_poly2)
                     for ix, iy in intersections:
                         dist = math.hypot(ix - raw_x, iy - raw_y)
-                        if dist < snap_threshold and dist < closest_dist:
-                            closest_dist = dist; snapped_p = QPointF(ix, iy); marker_p = QPointF(ix, iy); snap_type = "交点"
+                        if dist < snap_threshold:
+                            intersection_candidates.append((dist, QPointF(ix, iy), QPointF(ix, iy), "交点"))
 
-        if snapped_p: return snapped_p, snap_type, marker_p
+        # 3. 收集最近点（只在没有端点和交点时使用）
+        for item in valid_items:
+            if isinstance(item, SmartDimensionItem):
+                continue
+                
+            nearest_pt = None
+            
+            # 直线的最近点
+            if isinstance(item, SmartLineItem):
+                p1, p2 = item.coords
+                # 计算点到线段的垂直投影
+                dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+                length_sq = dx * dx + dy * dy
+                if length_sq > 1e-10:
+                    t = ((raw_x - p1[0]) * dx + (raw_y - p1[1]) * dy) / length_sq
+                    t = max(0, min(1, t))  # 限制在线段范围内
+                    nearest_pt = (p1[0] + t * dx, p1[1] + t * dy)
+            
+            # 圆的最近点
+            elif isinstance(item, SmartCircleItem):
+                cx, cy = item.center
+                dx, dy = raw_x - cx, raw_y - cy
+                dist_to_center = math.hypot(dx, dy)
+                if dist_to_center > 1e-10:
+                    # 圆上最近的点
+                    nearest_pt = (cx + dx / dist_to_center * item.radius, 
+                                 cy + dy / dist_to_center * item.radius)
+            
+            # 圆弧的最近点
+            elif hasattr(item, 'geom_type') and item.geom_type == 'arc':
+                cx, cy = item.center
+                dx, dy = raw_x - cx, raw_y - cy
+                dist_to_center = math.hypot(dx, dy)
+                if dist_to_center > 1e-10:
+                    # 计算鼠标相对圆心的角度
+                    mouse_angle = math.degrees(math.atan2(cy - raw_y, raw_x - cx))
+                    if mouse_angle < 0:
+                        mouse_angle += 360
+                    
+                    # 检查角度是否在圆弧范围内
+                    start_angle = item.start_angle
+                    end_angle = item.end_angle
+                    span = end_angle - start_angle
+                    if span <= 0:
+                        span += 360
+                    
+                    # 判断鼠标角度是否在圆弧范围内
+                    angle_in_arc = False
+                    if span < 360:
+                        if start_angle <= end_angle:
+                            angle_in_arc = start_angle <= mouse_angle <= end_angle
+                        else:
+                            angle_in_arc = mouse_angle >= start_angle or mouse_angle <= end_angle
+                    else:
+                        angle_in_arc = True
+                    
+                    if angle_in_arc:
+                        # 在圆弧范围内，投影到圆弧上
+                        angle_rad = math.radians(mouse_angle)
+                        nearest_pt = (cx + item.radius * math.cos(angle_rad),
+                                     cy - item.radius * math.sin(angle_rad))
+            
+            # 多段线的最近点
+            elif isinstance(item, SmartPolylineItem):
+                for i in range(len(item.coords) - 1):
+                    p1, p2 = item.coords[i], item.coords[i + 1]
+                    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+                    length_sq = dx * dx + dy * dy
+                    if length_sq > 1e-10:
+                        t = ((raw_x - p1[0]) * dx + (raw_y - p1[1]) * dy) / length_sq
+                        t = max(0, min(1, t))
+                        seg_nearest = (p1[0] + t * dx, p1[1] + t * dy)
+                        seg_dist = math.hypot(seg_nearest[0] - raw_x, seg_nearest[1] - raw_y)
+                        if seg_dist < snap_threshold and seg_dist < closest_dist:
+                            closest_dist = seg_dist
+                            nearest_pt = seg_nearest
+            
+            if nearest_pt:
+                dist = math.hypot(nearest_pt[0] - raw_x, nearest_pt[1] - raw_y)
+                if dist < snap_threshold:
+                    nearest_candidates.append((dist, QPointF(nearest_pt[0], nearest_pt[1]), QPointF(nearest_pt[0], nearest_pt[1]), "最近点"))
+
+        # 按优先级选择捕捉点：端点 > 交点 > 最近点
+        if endpoint_candidates:
+            endpoint_candidates.sort(key=lambda x: x[0])
+            _, snapped_p, marker_p, snap_type = endpoint_candidates[0]
+            return snapped_p, snap_type, marker_p
+        elif intersection_candidates:
+            intersection_candidates.sort(key=lambda x: x[0])
+            _, snapped_p, marker_p, snap_type = intersection_candidates[0]
+            return snapped_p, snap_type, marker_p
+        elif nearest_candidates:
+            nearest_candidates.sort(key=lambda x: x[0])
+            _, snapped_p, marker_p, snap_type = nearest_candidates[0]
+            return snapped_p, snap_type, marker_p
+        
         return None
 
     def _calculate_global_snap(self, raw_point):
@@ -417,6 +527,18 @@ class CADGraphicsView(QGraphicsView):
 
             final_point.setX(snap_x); final_point.setY(snap_y)
 
+        # 计算角度：即使发生了对象捕捉，如果极轴捕捉也激活，优先使用极轴角度
+        # 检查是否应该使用极轴角度（即使没有调整坐标，只要鼠标接近极轴线）
+        if not (is_polar_h or is_polar_v):
+            dist_h_polar = abs(final_point.y() - ref_point.y())
+            dist_v_polar = abs(final_point.x() - ref_point.x())
+            if dist_h_polar < snap_threshold_scene:
+                is_polar_h = True
+                polar_angle = 0.0 if final_point.x() >= ref_point.x() else 180.0
+            elif dist_v_polar < snap_threshold_scene:
+                is_polar_v = True
+                polar_angle = 90.0 if final_point.y() <= ref_point.y() else 270.0
+        
         raw_length = math.hypot(final_point.x() - ref_point.x(), final_point.y() - ref_point.y())
         if is_polar_h or is_polar_v: snapped_angle = polar_angle
         else:
