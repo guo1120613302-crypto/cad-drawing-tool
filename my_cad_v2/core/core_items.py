@@ -225,15 +225,14 @@ class SmartDimensionItem(QGraphicsItem, SmartShapeMixin):
         
         lod = painter.worldTransform().m11()
         scale_f = 1.0 / lod if lod > 0 else 1.0
-        gap = 4 * scale_f        
         ext = 3 * scale_f        
         arrow_size = 8 * scale_f 
         arrow_angle = 0.15       
 
         sign = 1 if proj >= 0 else -1
-        l1_start = QPointF(p1[0] + sign * gap * nx, p1[1] + sign * gap * ny)
+        l1_start = QPointF(p1[0], p1[1])
         l1_end = QPointF(dim_p1[0] + sign * ext * nx, dim_p1[1] + sign * ext * ny)
-        l2_start = QPointF(p2[0] + sign * gap * nx, p2[1] + sign * gap * ny)
+        l2_start = QPointF(p2[0], p2[1])
         l2_end = QPointF(dim_p2[0] + sign * ext * nx, dim_p2[1] + sign * ext * ny)
 
         painter.drawLine(l1_start, l1_end)
@@ -368,9 +367,9 @@ class SmartCircleItem(QGraphicsItem, SmartShapeMixin):
 
 
 class SmartPolylineItem(QGraphicsItem, SmartShapeMixin):
-    """V2.0 智能多段线实体"""
+    """V2.0 智能多段线实体，支持直线段和圆弧段（终极修复版）"""
     geom_type = "polyline"
-    def __init__(self, coords, *args, **kwargs):
+    def __init__(self, coords, segments=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable | QGraphicsItem.GraphicsItemFlag.ItemIsFocusable)
         self.setZValue(100)
@@ -378,6 +377,7 @@ class SmartPolylineItem(QGraphicsItem, SmartShapeMixin):
         self._is_hovered = False
         self.hot_grip_index = -1
         self.coords = coords
+        self.segments = segments if segments else [{"type": "line"} for _ in range(len(coords)-1)]
         self._pen = QPen(QColor(255, 255, 255), 1)
         self._pen.setCosmetic(True)
 
@@ -406,24 +406,50 @@ class SmartPolylineItem(QGraphicsItem, SmartShapeMixin):
     def get_geom_coords(self):
         return self.coords
 
+    def _get_arc_path(self, p1, p2, bulge):
+        path = QPainterPath()
+        path.moveTo(QPointF(*p1))
+        dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+        chord = math.hypot(dx, dy)
+        if chord < 1e-4 or abs(bulge) < 1e-4:
+            path.lineTo(QPointF(*p2))
+            return path
+
+        # 完全贴合标准凸度圆心推导
+        d = -(chord / 2.0) * ((1.0 - bulge**2) / (2.0 * bulge))
+        mid_x, mid_y = (p1[0] + p2[0]) / 2.0, (p1[1] + p2[1]) / 2.0
+        
+        cx = mid_x - d * (dy / chord)
+        cy = mid_y - d * (-dx / chord)
+        radius = math.hypot(p1[0] - cx, p1[1] - cy)
+
+        start_angle = math.degrees(math.atan2(-(p1[1] - cy), p1[0] - cx))
+        span_angle = math.degrees(4 * math.atan(bulge))
+
+        rect = QRectF(cx - radius, cy - radius, 2*radius, 2*radius)
+        path.arcTo(rect, start_angle, span_angle)
+        return path
+
     def shape(self):
         path = QPainterPath()
         if not self.coords: 
             return path
         path.moveTo(QPointF(*self.coords[0]))
-        for x, y in self.coords[1:]: 
-            path.lineTo(QPointF(x, y))
+        for i in range(len(self.coords) - 1):
+            p1 = self.coords[i]
+            p2 = self.coords[i + 1]
+            seg = self.segments[i] if i < len(self.segments) else {"type": "line"}
+            if seg.get("type") == "arc" and "bulge" in seg:
+                arc_p = self._get_arc_path(p1, p2, seg["bulge"])
+                path.addPath(arc_p)
+            else:
+                path.lineTo(QPointF(*p2))
         stroker = QPainterPathStroker()
         stroker.setWidth(20.0)
         return stroker.createStroke(path)
 
     def boundingRect(self):
-        if not self.coords: 
-            return QRectF()
-        xs = [p[0] for p in self.coords]
-        ys = [p[1] for p in self.coords]
-        margin = 20.0
-        return QRectF(min(xs)-margin, min(ys)-margin, max(xs)-min(xs)+2*margin, max(ys)-min(ys)+2*margin)
+        return self.shape().boundingRect()
 
     def paint(self, painter, option, widget=None):
         if len(self.coords) < 2: 
@@ -435,10 +461,18 @@ class SmartPolylineItem(QGraphicsItem, SmartShapeMixin):
             pen.setColor(QColor(0, 120, 215))
         elif self._is_hovered:
             pen.setWidth(3)
-            
         painter.setPen(pen)
-        poly = QPolygonF([QPointF(x, y) for x, y in self.coords])
-        painter.drawPolyline(poly)
+        
+        for i in range(len(self.coords) - 1):
+            p1 = self.coords[i]
+            p2 = self.coords[i + 1]
+            seg_info = self.segments[i] if i < len(self.segments) else {"type": "line"}
+            
+            if seg_info.get("type") == "arc" and "bulge" in seg_info:
+                path = self._get_arc_path(p1, p2, seg_info["bulge"])
+                painter.drawPath(path)
+            else:
+                painter.drawLine(QPointF(p1[0], p1[1]), QPointF(p2[0], p2[1]))
 
     def get_grips(self):
         grips = list(self.coords)
