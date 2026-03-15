@@ -21,13 +21,15 @@ class RectTool(BaseTool):
     def __init__(self, canvas):
         super().__init__(canvas)
         self.start_tuple = None
-        self.input_buffer = ""
+        self.input_mode = "width"
+        self.width_buffer = ""
+        self.height_buffer = ""
 
     def get_reference_point(self):
         return QPointF(*self.start_tuple) if self.start_tuple else None
 
     def get_input_buffer(self):
-        return self.input_buffer
+        return self.width_buffer if self.input_mode == "width" else self.height_buffer
 
     def activate(self):
         self.canvas.viewport().setCursor(Qt.CursorShape.CrossCursor)
@@ -40,12 +42,19 @@ class RectTool(BaseTool):
             self.canvas.scene().removeItem(self.temp_item)
         self.temp_item = None
         self.start_tuple = None
-        self.input_buffer = ""
+        self.input_mode = "width"
+        self.width_buffer = ""
+        self.height_buffer = ""
 
     def _generate_rect_coords(self, start_tup, end_tup):
         sx, sy = start_tup
         ex, ey = end_tup
         return [(sx, sy), (ex, sy), (ex, ey), (sx, ey)]
+
+    def _update_preview(self):
+        if self.start_tuple and self.temp_item and hasattr(self.canvas, 'last_cursor_point'):
+            class DummyEvent: pass
+            self.mouseMoveEvent(DummyEvent(), self.canvas.last_cursor_point, getattr(self.canvas, 'last_snapped_angle', 0.0))
 
     def finalize_current_rect(self, end_point):
         if self.temp_item:
@@ -53,7 +62,6 @@ class RectTool(BaseTool):
             coords = self._generate_rect_coords(self.start_tuple, end_tuple)
             self.temp_item.set_coords(coords)
             
-            # 【颜色与图层解耦】：颜色坚决走 ColorManager
             current_color = self.canvas.color_manager.get_color()
             final_pen = QPen(current_color, 1)
             final_pen.setCosmetic(True)
@@ -64,7 +72,6 @@ class RectTool(BaseTool):
                 QGraphicsItem.GraphicsItemFlag.ItemIsFocusable
             )
             
-            # 【图层户口注入】：定稿时打上当前图层烙印
             self.canvas.layer_manager.apply_current_layer_props(self.temp_item)
             
             cmd = CommandDrawRect(self.canvas.scene(), self.temp_item)
@@ -72,7 +79,9 @@ class RectTool(BaseTool):
             
             self.temp_item = None
             self.start_tuple = None
-            self.input_buffer = ""
+            self.input_mode = "width"
+            self.width_buffer = ""
+            self.height_buffer = ""
             self.canvas.acquired_point = None
 
     def mousePressEvent(self, event, final_point, snapped_angle):
@@ -84,13 +93,12 @@ class RectTool(BaseTool):
                 coords = self._generate_rect_coords(self.start_tuple, self.start_tuple)
                 self.temp_item = SmartPolygonItem(coords)
                 self.temp_item.setFlags(QGraphicsItem.GraphicsItemFlag(0))
-                pen = QPen(QColor(255, 255, 255), 1, Qt.PenStyle.DashLine)
+                # 【修改】：虚线改为实线 SolidLine
+                pen = QPen(QColor(255, 255, 255), 1, Qt.PenStyle.SolidLine)
                 pen.setCosmetic(True)
                 self.temp_item.setPen(pen)
                 
-                # 【图层户口注入】：画虚线框时就打上烙印，如果当前图层隐藏，画的时候也是隐藏的
                 self.canvas.layer_manager.apply_current_layer_props(self.temp_item)
-                
                 self.canvas.scene().addItem(self.temp_item)
             else:
                 self.finalize_current_rect(final_point)
@@ -104,33 +112,62 @@ class RectTool(BaseTool):
 
     def mouseMoveEvent(self, event, final_point, snapped_angle):
         if self.start_tuple and self.temp_item:
-            end_tuple = (final_point.x(), final_point.y())
+            sx, sy = self.start_tuple
+            ex, ey = final_point.x(), final_point.y()
+            
+            if self.width_buffer:
+                try:
+                    w = float(self.width_buffer)
+                    ex = sx + w if ex >= sx else sx - w
+                except ValueError: pass
+            
+            if self.height_buffer:
+                try:
+                    h = float(self.height_buffer)
+                    ey = sy + h if ey >= sy else sy - h
+                except ValueError: pass
+                
+            end_tuple = (ex, ey)
             coords = self._generate_rect_coords(self.start_tuple, end_tuple)
             self.temp_item.set_coords(coords)
         return True
 
     def keyPressEvent(self, event):
         if self.start_tuple:
+            # 支持 Tab 切换
+            if event.key() == Qt.Key.Key_Tab or event.key() == Qt.Key.Key_Backtab:
+                event.accept()
+                self.input_mode = "height" if self.input_mode == "width" else "width"
+                self._update_preview()
+                return True
+                
             key = event.text()
-            if key.isdigit() or key in ['.', ',', '-']:
-                self.input_buffer += key
+            # 兼容您的老习惯：如果输入了逗号，直接跳到高度输入框
+            if key == ',':  
+                event.accept()
+                self.input_mode = "height"
+                self._update_preview()
+                return True
+
+            if key.isdigit() or key == '.' or key == '-':
+                if self.input_mode == "width":
+                    self.width_buffer += key
+                else:
+                    self.height_buffer += key
+                self._update_preview()
                 return True
             elif event.key() == Qt.Key.Key_Backspace:
-                self.input_buffer = self.input_buffer[:-1]
+                if self.input_mode == "width":
+                    self.width_buffer = self.width_buffer[:-1]
+                else:
+                    self.height_buffer = self.height_buffer[:-1]
+                self._update_preview()
                 return True
             elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                if self.input_buffer:
-                    try:
-                        if ',' in self.input_buffer:
-                            w, h = map(float, self.input_buffer.split(','))
-                            sx, sy = self.start_tuple
-                            self.finalize_current_rect(QPointF(sx + w, sy - h))
-                        else:
-                            side = float(self.input_buffer)
-                            sx, sy = self.start_tuple
-                            self.finalize_current_rect(QPointF(sx + side, sy - side))
-                    except ValueError:
-                        pass
+                if self.temp_item:
+                    ex = self.temp_item.coords[2][0]
+                    ey = self.temp_item.coords[2][1]
+                    self.finalize_current_rect(QPointF(ex, ey))
                 return True
             elif event.key() == Qt.Key.Key_Escape:
                 self._cleanup_temp_items()

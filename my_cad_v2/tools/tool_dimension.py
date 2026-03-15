@@ -1,6 +1,6 @@
 # tools/tool_dimension.py
 from tools.base_tool import BaseTool
-from core.core_items import SmartDimensionItem
+from core.core_items import SmartDimensionItem, SmartOrthogonalDimensionItem
 from PyQt6.QtWidgets import QGraphicsItem, QGraphicsLineItem
 from PyQt6.QtCore import Qt, QPointF, QLineF
 from PyQt6.QtGui import QPen, QColor, QUndoCommand
@@ -98,7 +98,7 @@ class DimensionTool(BaseTool):
                 self.preview_line = None
                 
                 # 生成真实的跟随标注模型
-                self.temp_item = SmartDimensionItem(self.p1, self.p2, pt)
+                self.temp_item = SmartOrthogonalDimensionItem(self.p1, self.p2, pt)
                 pen = QPen(QColor(255, 255, 255), 1)
                 pen.setCosmetic(True)
                 self.temp_item.setPen(pen)

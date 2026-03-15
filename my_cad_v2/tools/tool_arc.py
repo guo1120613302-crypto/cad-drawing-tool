@@ -460,7 +460,8 @@ class ArcTool(BaseTool):
     def _show_preview(self, center, radius, start_angle, end_angle):
         if not self.preview_item:
             self.preview_item = QGraphicsPathItem()
-            pen = QPen(QColor(255, 255, 255, 150), 1, Qt.PenStyle.DashLine)
+            # 【修改】：虚线改为实线 SolidLine，透明度提升至 200
+            pen = QPen(QColor(255, 255, 255, 200), 1, Qt.PenStyle.SolidLine)
             pen.setCosmetic(True)
             self.preview_item.setPen(pen)
             self.canvas.scene().addItem(self.preview_item)

@@ -21,7 +21,6 @@ class CommandDrawCircle(QUndoCommand):
             self.item.setSelected(False)
             self.scene.removeItem(self.item)
 
-
 class CircleTool(BaseTool):
     def __init__(self, canvas):
         super().__init__(canvas)
@@ -29,6 +28,10 @@ class CircleTool(BaseTool):
         self.ghost_circle = None
         self.state = 0
         self.input_buffer = ""
+
+    def get_reference_point(self):
+        # 核心：将圆心暴露给底层画板，用于绘制半径标注线
+        return QPointF(*self.center_point) if self.state == 1 and self.center_point else None
 
     def get_input_buffer(self):
         return self.input_buffer
@@ -39,7 +42,6 @@ class CircleTool(BaseTool):
         self.center_point = None
         self.input_buffer = ""
         self._cleanup_ghost()
-        self._update_hud()
 
     def deactivate(self):
         self._cleanup_ghost()
@@ -51,18 +53,11 @@ class CircleTool(BaseTool):
             self.canvas.scene().removeItem(self.ghost_circle)
         self.ghost_circle = None
 
-    def _update_hud(self):
-        if not hasattr(self.canvas, 'hud_polar_info'):
-            return
-        self.canvas.hud_polar_info.show()
-        if self.state == 0:
-            text, color = "画圆: 请指定圆心", "#5bc0de"
-        else:
-            text, color = f"画圆: 请指定半径或输入数值: {self.input_buffer}", "#5cb85c"
-        self.canvas.hud_polar_info.setHtml(
-            f"<div style='background-color:{color}; color:white; padding:4px 8px; border-radius:2px; font-family:Arial; font-size:12px;'>⭕ {text}</div>"
-        )
-        self.canvas.hud_polar_info.setPos(self.canvas.mapToScene(20, 20))
+    def _update_preview(self):
+        # 触发底层的鼠标移动事件，强制刷新画布上的动态 HUD 尺寸框
+        if self.state == 1 and self.ghost_circle and hasattr(self.canvas, 'last_cursor_point'):
+            class DummyEvent: pass
+            self.mouseMoveEvent(DummyEvent(), self.canvas.last_cursor_point, getattr(self.canvas, 'last_snapped_angle', 0.0))
 
     def mousePressEvent(self, event, final_point, snapped_angle):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -73,7 +68,8 @@ class CircleTool(BaseTool):
                 self.input_buffer = "" # 清空可能的残留输入
                 
                 self.ghost_circle = QGraphicsEllipseItem()
-                pen = QPen(QColor(255, 255, 255, 150), 1, Qt.PenStyle.DashLine)
+                # 【修改】：虚线改为实线 SolidLine，并稍微加深了透明度(200)使其更明显
+                pen = QPen(QColor(255, 255, 255, 200), 1, Qt.PenStyle.SolidLine)
                 pen.setCosmetic(True)
                 self.ghost_circle.setPen(pen)
                 self.canvas.scene().addItem(self.ghost_circle)
@@ -110,18 +106,15 @@ class CircleTool(BaseTool):
                 self.canvas.switch_tool("选择")
             return True
         return False
-
     def mouseMoveEvent(self, event, final_point, snapped_angle):
-        self._update_hud()
         if self.state == 1 and self.ghost_circle:
             cx, cy = self.center_point
-            # 只有在没有手动输入数值时，才随鼠标移动预览半径
             if not self.input_buffer:
                 r = math.hypot(final_point.x() - cx, final_point.y() - cy)
                 if r > 0:
                     self.ghost_circle.setRect(QRectF(cx - r, cy - r, 2 * r, 2 * r))
             else:
-                self._update_ghost_by_input() # 确保有输入时预览锁定
+                self._update_ghost_by_input() 
         return True
 
     def keyPressEvent(self, event):
@@ -129,13 +122,13 @@ class CircleTool(BaseTool):
             key = event.text()
             if key.isdigit() or key == '.':
                 self.input_buffer += key
-                self._update_hud()
                 self._update_ghost_by_input()
+                self._update_preview()
                 return True
             elif event.key() == Qt.Key.Key_Backspace:
                 self.input_buffer = self.input_buffer[:-1]
-                self._update_hud()
                 self._update_ghost_by_input()
+                self._update_preview()
                 return True
             elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 if self.input_buffer:
@@ -143,14 +136,16 @@ class CircleTool(BaseTool):
                         r = float(self.input_buffer)
                         if r > 0:
                             self._finalize_circle(r)
-                    except ValueError:
-                        pass
+                    except ValueError: pass
                 return True
-                
-        if event.key() == Qt.Key.Key_Escape:
-            self.deactivate()
-            self.canvas.switch_tool("选择")
-            return True
+            elif event.key() == Qt.Key.Key_Escape:
+                self.state = 0
+                self.center_point = None
+                self.input_buffer = ""
+                self._cleanup_ghost()
+                if hasattr(self.canvas, '_cleanup_tracking_huds'):
+                    self.canvas._cleanup_tracking_huds()
+                return True
         return False
 
     def _update_ghost_by_input(self):
@@ -164,26 +159,22 @@ class CircleTool(BaseTool):
                 pass
 
     def _finalize_circle(self, radius):
-        if radius <= 0:
-            return
+        if radius <= 0: return
             
         new_item = SmartCircleItem(self.center_point, radius)
         
-        # 应用颜色和图层属性
         current_color = self.canvas.color_manager.get_color()
         pen = QPen(current_color, 1)
         pen.setCosmetic(True)
         new_item.setPen(pen)
-        
-        # 【修复】：应用图层属性
         self.canvas.layer_manager.apply_current_layer_props(new_item)
         
         cmd = CommandDrawCircle(self.canvas.scene(), new_item)
         self.canvas.undo_stack.push(cmd)
         
-        # 核心：提交后必须彻底清理状态
         self.state = 0
         self.center_point = None
         self.input_buffer = ""
         self._cleanup_ghost()
-        self._update_hud()
+        if hasattr(self.canvas, '_cleanup_tracking_huds'):
+            self.canvas._cleanup_tracking_huds()

@@ -1,4 +1,5 @@
 # core/core_canvas.py
+from tools.tool_spline import SplineTool
 from PyQt6.QtWidgets import QGraphicsView, QGraphicsLineItem, QGraphicsTextItem, QGraphicsRectItem, QGraphicsItem, QLabel, QGraphicsPathItem
 from PyQt6.QtCore import Qt, QLineF, QPointF, QRectF
 from PyQt6.QtGui import QPen, QColor, QPainter, QKeyEvent, QUndoStack, QUndoCommand, QKeySequence, QBrush, QPainterPath
@@ -26,6 +27,8 @@ from tools.tool_dimension import DimensionTool
 from tools.tool_circle import CircleTool
 from tools.tool_polyline import PolylineTool
 from tools.tool_arc import ArcTool
+from tools.tool_polygon import PolygonTool
+from tools.tool_ellipse import EllipseTool
 
 class CommandPasteGeom(QUndoCommand):
     """复制粘贴对应的撤销栈封装"""
@@ -134,6 +137,7 @@ class CADGraphicsView(QGraphicsView):
             "选择": SelectTool(self),
             "直线": LineTool(self),
             "多段线": PolylineTool(self),
+            "样条曲线": SplineTool(self),
             "矩形": RectTool(self),
             "圆": CircleTool(self),
             "圆弧": ArcTool(self),
@@ -143,7 +147,9 @@ class CADGraphicsView(QGraphicsView):
             "修剪": TrimTool(self),
             "延伸": ExtendTool(self),
             "打断": BreakTool(self),
-            "标注": DimensionTool(self)
+            "标注": DimensionTool(self),
+            "多边形": PolygonTool(self),
+            "椭圆": EllipseTool(self)
         }
         self.current_tool = self.tools["直线"]
         self.current_tool.activate()
@@ -497,7 +503,6 @@ class CADGraphicsView(QGraphicsView):
         ref_point = self.current_tool.get_reference_point()
         
         if not ref_point:
-            # 【核心修复】：仅清理极轴和追踪 UI，绝对不要清理捕捉框 (snap_marker)，否则会把刚算好的端点 UI 隐藏掉
             self.polar_line.hide()
             self.tracking_line.hide()
             self.track_marker_h.hide()
@@ -525,14 +530,14 @@ class CADGraphicsView(QGraphicsView):
                     if dist_h_track < snap_threshold_scene:
                         is_track_h = True; snap_y = self.acquired_point.y(); track_angle = 0.0 if snap_x >= self.acquired_point.x() else 180.0
                     elif dist_v_track < snap_threshold_scene:
-                        is_track_v = True; snap_x = self.acquired_point.x(); track_angle = 90.0  # 垂直始终是90°
+                        is_track_v = True; snap_x = self.acquired_point.x(); track_angle = 90.0
 
             dist_h_polar = abs(snap_y - ref_point.y()); dist_v_polar = abs(snap_x - ref_point.x())
 
             if dist_h_polar < snap_threshold_scene:
                 is_polar_h = True; snap_y = ref_point.y(); polar_angle = 0.0 if snap_x >= ref_point.x() else 180.0
             elif dist_v_polar < snap_threshold_scene:
-                is_polar_v = True; snap_x = ref_point.x(); polar_angle = 90.0  # 垂直始终是90°
+                is_polar_v = True; snap_x = ref_point.x(); polar_angle = 90.0
 
             final_point.setX(snap_x); final_point.setY(snap_y)
 
@@ -544,47 +549,26 @@ class CADGraphicsView(QGraphicsView):
                 polar_angle = 0.0 if final_point.x() >= ref_point.x() else 180.0
             elif dist_v_polar < snap_threshold_scene:
                 is_polar_v = True
-                polar_angle = 90.0  # 垂直始终是90°
+                polar_angle = 90.0
         
         raw_length = math.hypot(final_point.x() - ref_point.x(), final_point.y() - ref_point.y())
-        
-        # CAD角度系统：分为上下两个半圆，每个半圆0-180°
-        # 判断鼠标在上半部分还是下半部分
         is_lower_half = final_point.y() > ref_point.y()
         
         if is_polar_h or is_polar_v: 
             snapped_angle = polar_angle
         else:
-            # 计算从水平线到当前线的角度
             dx = final_point.x() - ref_point.x()
             dy = final_point.y() - ref_point.y()
-            
-            # 计算数学角度
             math_angle = math.degrees(math.atan2(-dy, dx))
             if math_angle < 0: math_angle += 360
-            
-            # 转换为CAD角度（0-180°）
             if is_lower_half:
-                # 下半部分：0° → 90°（向下）→ 180°
-                if math_angle >= 0 and math_angle <= 180:
-                    snapped_angle = 360 - math_angle  # 0°→0°, 270°→90°, 180°→180°
-                else:
-                    snapped_angle = 360 - math_angle
+                if math_angle >= 0 and math_angle <= 180: snapped_angle = 360 - math_angle
+                else: snapped_angle = 360 - math_angle
             else:
-                # 上半部分：0° → 90°（向上）→ 180°
-                snapped_angle = math_angle  # 0°→0°, 90°→90°, 180°→180°
+                snapped_angle = math_angle
 
         if is_polar_h or is_polar_v:
-            # polar_angle是CAD角度，需要转换为数学角度用于绘制
-            if is_polar_v:
-                # 垂直线：CAD 90° 需要根据上下半部分转换
-                # 但极轴线是无限延伸的，所以直接用数学90°（向上）或270°（向下）
-                # 实际上垂直线上下都画，所以用90°即可
-                polar_math_angle = 90.0
-            else:
-                # 水平线：0° 或 180°，CAD和数学角度相同
-                polar_math_angle = polar_angle
-            
+            polar_math_angle = 90.0 if is_polar_v else polar_angle
             rad = math.radians(polar_math_angle)
             p_end_x = ref_point.x() + 10000 * math.cos(rad); p_end_y = ref_point.y() - 10000 * math.sin(rad)
             p_start_x = ref_point.x() - 10000 * math.cos(rad); p_start_y = ref_point.y() + 10000 * math.sin(rad)
@@ -599,7 +583,6 @@ class CADGraphicsView(QGraphicsView):
             self.tracking_line.setLine(QLineF(m_x, m_y, final_point.x(), final_point.y())); self.tracking_line.show()
         else:
             self.tracking_line.hide(); self.track_marker_h.hide(); self.track_marker_v.hide()
-
 
         # === 【核心重构：全局原生底层动态 HUD，极简虚线标注】 ===
         def make_arrow(tip_x, tip_y, angle_deg, size=8):
@@ -619,144 +602,265 @@ class CADGraphicsView(QGraphicsView):
             len_buffer = getattr(self.current_tool, 'length_buffer', '')
             tool_buffer = self.current_tool.get_input_buffer()
             
-            # 【关键修复】：如果有角度输入，使用输入的角度；否则使用捕捉角度
-            display_angle_value = snapped_angle
-            if ang_buffer:
-                try:
-                    display_angle_value = float(ang_buffer)
-                except ValueError:
-                    display_angle_value = snapped_angle
             
-            ref_angle_rad = 0.0
-            if hasattr(self.current_tool, '_get_tangent_angle') and getattr(self.current_tool, 'segment_mode', '') == 'arc':
-                ref_angle_rad = self.current_tool._get_tangent_angle()
-                
-            ref_len = min(raw_length * 1.2, raw_length + 30 / lod)
-            rx = ref_point.x() + ref_len * math.cos(ref_angle_rad)
-            ry = ref_point.y() - ref_len * math.sin(ref_angle_rad)
-            self.dyn_ref_line.setLine(QLineF(ref_point.x(), ref_point.y(), rx, ry))
-            self.dyn_ref_line.show()
 
-            # --- 3. 绘制长度尺寸线（在相反面） ---
-            len_path = QPainterPath()
-            line_angle_rad = math.atan2(-(final_point.y() - ref_point.y()), final_point.x() - ref_point.x())
-            line_angle_deg = math.degrees(line_angle_rad)
-            
-            offset_dist = 25 / lod  
-            overshoot = 4 / lod     
-            gap = 3 / lod           
-            
-            nx = math.cos(line_angle_rad - math.pi/2)
-            ny = -math.sin(line_angle_rad - math.pi/2)
-            
-            dim_start = QPointF(ref_point.x() + offset_dist * nx, ref_point.y() + offset_dist * ny)
-            dim_end = QPointF(final_point.x() + offset_dist * nx, final_point.y() + offset_dist * ny)
-            
-            if raw_length > 10 / lod:
-                len_path.moveTo(dim_start)
-                len_path.lineTo(dim_end)
-                
-                ext1_start = QPointF(ref_point.x() + gap * nx, ref_point.y() + gap * ny)
-                ext1_end = QPointF(ref_point.x() + (offset_dist + overshoot) * nx, ref_point.y() + (offset_dist + overshoot) * ny)
-                len_path.moveTo(ext1_start)
-                len_path.lineTo(ext1_end)
-                
-                ext2_start = QPointF(final_point.x() + gap * nx, final_point.y() + gap * ny)
-                ext2_end = QPointF(final_point.x() + (offset_dist + overshoot) * nx, final_point.y() + (offset_dist + overshoot) * ny)
-                len_path.moveTo(ext2_start)
-                len_path.lineTo(ext2_end)
-                
-                len_path.addPath(make_arrow(dim_start.x(), dim_start.y(), line_angle_deg + 180, 7))
-                len_path.addPath(make_arrow(dim_end.x(), dim_end.y(), line_angle_deg, 7))
-                
-                self.dyn_len_dim_item.setPath(len_path)
-                self.dyn_len_dim_item.show()
-            else:
-                self.dyn_len_dim_item.hide()
 
-            # --- 4. 绘制角度标注扇形弧（CAD两个半圆系统：0-180°） ---
-            # 半径设置为实际长度，让弧线延伸到鼠标位置
-            arc_radius = max(20.0 / lod, raw_length)
+            is_rect_tool = self.current_tool.__class__.__name__ == 'RectTool'
             
-            # 计算参考角度（数学角度，水平线=0°）
-            ref_deg = math.degrees(ref_angle_rad)
-            
-            # 判断鼠标在上半部分还是下半部分
-            is_lower_half = final_point.y() > ref_point.y()
-            
-            # display_angle_value已经是CAD角度（0-180°）
-            # 需要转换为数学角度用于绘制弧线
-            if is_lower_half:
-                # 下半部分：CAD角度顺时针，数学角度 = 360 - CAD角度
-                target_math_angle = (360 - display_angle_value) % 360
-            else:
-                # 上半部分：CAD角度逆时针，数学角度 = CAD角度
-                target_math_angle = display_angle_value
-            
-            # 计算弧线span（数学角度系统）
-            span_math = target_math_angle - ref_deg
-            
-            # 归一化到-180到180范围
-            while span_math > 180: span_math -= 360
-            while span_math < -180: span_math += 360
-            
-            # 显示的角度值就是display_angle_value（0-180°）
-            actual_display_angle = display_angle_value
-                
-            if arc_radius > 5 / lod:
-                arc_rect = QRectF(ref_point.x() - arc_radius, ref_point.y() - arc_radius, arc_radius * 2, arc_radius * 2)
-                arc_path = QPainterPath()
-                arc_path.arcMoveTo(arc_rect, ref_deg)
-                arc_path.arcTo(arc_rect, ref_deg, span_math)
-                
-                self.dyn_arc_dim_item.setPath(arc_path)
-                self.dyn_arc_dim_item.show()
-            else:
+            current_tool_name = self.current_tool.__class__.__name__
+            is_circle_style_hud = current_tool_name in ['CircleTool', 'PolygonTool', 'EllipseTool']
+
+            if is_rect_tool:
+                # ===============================================
+                # 矩形专用逻辑：在右下角引线处渲染尺寸线，将蓝色高亮框直接盖在引线上
+                # ===============================================
+                self.dyn_ref_line.hide()
                 self.dyn_arc_dim_item.hide()
+                
+                input_mode = getattr(self.current_tool, 'input_mode', 'width')
+                w_buf = getattr(self.current_tool, 'width_buffer', '')
+                h_buf = getattr(self.current_tool, 'height_buffer', '')
+                
+                sx, sy = ref_point.x(), ref_point.y()
+                rect_ex, rect_ey = final_point.x(), final_point.y()
+                if hasattr(self.current_tool, 'temp_item') and self.current_tool.temp_item:
+                    rect_ex = self.current_tool.temp_item.coords[2][0]
+                    rect_ey = self.current_tool.temp_item.coords[2][1]
+                
+                max_x = max(sx, rect_ex)
+                max_y = max(sy, rect_ey)
+                min_x = min(sx, rect_ex)
+                min_y = min(sy, rect_ey)
+                offset = 35 / lod
+                
+                rect_dim_path = QPainterPath()
+                
+                # 1. 宽度辅助线及箭头 (在矩形最底部)
+                w_start = QPointF(min_x, max_y + offset)
+                w_end = QPointF(max_x, max_y + offset)
+                if abs(rect_ex - sx) > 10 / lod:
+                    rect_dim_path.moveTo(w_start); rect_dim_path.lineTo(w_end)
+                    rect_dim_path.moveTo(QPointF(min_x, max_y + 5/lod)); rect_dim_path.lineTo(QPointF(min_x, max_y + offset + 5/lod))
+                    rect_dim_path.moveTo(QPointF(max_x, max_y + 5/lod)); rect_dim_path.lineTo(QPointF(max_x, max_y + offset + 5/lod))
+                    rect_dim_path.addPath(make_arrow(w_start.x(), w_start.y(), 180, 7))
+                    rect_dim_path.addPath(make_arrow(w_end.x(), w_end.y(), 0, 7))
+                
+                # 2. 高度辅助线及箭头 (在矩形最右侧)
+                h_start = QPointF(max_x + offset, min_y)
+                h_end = QPointF(max_x + offset, max_y)
+                if abs(rect_ey - sy) > 10 / lod:
+                    rect_dim_path.moveTo(h_start); rect_dim_path.lineTo(h_end)
+                    rect_dim_path.moveTo(QPointF(max_x + 5/lod, min_y)); rect_dim_path.lineTo(QPointF(max_x + offset + 5/lod, min_y))
+                    rect_dim_path.moveTo(QPointF(max_x + 5/lod, max_y)); rect_dim_path.lineTo(QPointF(max_x + offset + 5/lod, max_y))
+                    rect_dim_path.addPath(make_arrow(h_start.x(), h_start.y(), 90, 7))
+                    rect_dim_path.addPath(make_arrow(h_end.x(), h_end.y(), -90, 7))
 
-            # --- 5. 设置输入框文本，并精准吸附在尺寸线上 ---
-            # 长度显示：优先显示输入的值
-            if input_mode == 'length' and len_buffer:
-                display_length = len_buffer
-            elif input_mode == 'angle' and tool_buffer:
-                display_length = tool_buffer
+                self.dyn_len_dim_item.setPath(rect_dim_path)
+                self.dyn_len_dim_item.show()
+                
+                # 3. 居中覆盖输入框：像直线一样，正在输入的一侧变蓝，另一侧变深灰
+                display_w = w_buf if w_buf else f"{abs(rect_ex - sx):.2f}"
+                display_h = h_buf if h_buf else f"{abs(rect_ey - sy):.2f}"
+                
+                bg_w = "#0055ff" if input_mode == 'width' else "#444444"
+                bg_h = "#0055ff" if input_mode == 'height' else "#444444"
+                
+                self.hud_length.setHtml(f"<div style='background-color:{bg_w}; color:white; padding:2px 4px; border:1px solid #777; font-family:Arial; font-size:12px; text-align:center;'>{display_w}</div>")
+                self.hud_angle.setHtml(f"<div style='background-color:{bg_h}; color:white; padding:2px 4px; border:1px solid #777; font-family:Arial; font-size:12px; text-align:center;'>{display_h}</div>")
+                
+                mid_w_x = (sx + rect_ex) / 2.0
+                self.hud_length.setPos(mid_w_x - 20 / lod, max_y + offset - 12 / lod)
+                
+                mid_h_y = (sy + rect_ey) / 2.0
+                self.hud_angle.setPos(max_x + offset - 20 / lod, mid_h_y - 12 / lod)
+                
+                self.hud_length.show()
+                self.hud_angle.show()
+                
+                display_length = f"{display_w} , {display_h}"
+                
+            elif is_circle_style_hud:
+                # ===============================================
+                # 圆形/多边形/椭圆 统一逻辑：从中心到边缘绘制带箭头的半径引线
+                # ===============================================
+                self.dyn_ref_line.hide()
+                self.dyn_arc_dim_item.hide()
+                self.hud_angle.hide()
+
+                tool_buffer = self.current_tool.get_input_buffer()
+                radius = raw_length
+                if tool_buffer:
+                    try: radius = float(tool_buffer)
+                    except ValueError: pass
+
+                # 根据半径和角度锁定终点坐标
+                dx = final_point.x() - ref_point.x()
+                dy = final_point.y() - ref_point.y()
+                
+                if raw_length > 1e-4:
+                    edge_x = ref_point.x() + radius * (dx / raw_length)
+                    edge_y = ref_point.y() + radius * (dy / raw_length)
+                else:
+                    edge_x = ref_point.x() + radius
+                    edge_y = ref_point.y()
+
+                edge_point = QPointF(edge_x, edge_y)
+                rad_path = QPainterPath()
+                
+                if radius > 0:
+                    rad_path.moveTo(ref_point)
+                    rad_path.lineTo(edge_point)
+                    # 绘制朝外的箭头
+                    angle_deg = math.degrees(math.atan2(-(edge_y - ref_point.y()), edge_x - ref_point.x()))
+                    rad_path.addPath(make_arrow(edge_point.x(), edge_point.y(), angle_deg, 7))
+
+                self.dyn_len_dim_item.setPath(rad_path)
+                self.dyn_len_dim_item.show()
+
+                display_r = tool_buffer if tool_buffer else f"{radius:.2f}"
+                
+                # 动态调整前缀：椭圆用 L(Length)，圆/多边形用 R(Radius)
+                prefix = "L:" if current_tool_name == 'EllipseTool' else "R:"
+                
+                self.hud_length.setHtml(f"<div style='background-color:#0055ff; color:white; padding:2px 4px; border:1px solid #777; font-family:Arial; font-size:12px; text-align:center;'>{prefix} {display_r}</div>")
+
+                # 如果半径太小，文字往外推，防止挤在圆心；否则文字居中于引线
+                if radius * lod < 40:
+                    self.hud_length.setPos(edge_point.x() + 5/lod, edge_point.y() - 12/lod)
+                else:
+                    mid_x = (ref_point.x() + edge_point.x()) / 2.0
+                    mid_y = (ref_point.y() + edge_point.y()) / 2.0
+                    self.hud_length.setPos(mid_x - 20 / lod, mid_y - 12 / lod)
+                    
+                self.hud_length.show()
+                display_length = f"{prefix}={display_r}"
+
             else:
-                display_length = f"{raw_length:.2f}"
-            
-            # 角度显示：优先显示输入的值
-            if input_mode == 'angle' and ang_buffer:
-                display_angle = f"{ang_buffer}°"
-            elif input_mode == 'length' and tool_buffer:
-                display_angle = f"{tool_buffer}°"
-            else:
-                display_angle = f"{actual_display_angle:.0f}°"
-            
-            bg_len = "#0055ff" if input_mode == 'length' else "#444444"
-            bg_ang = "#0055ff" if input_mode == 'angle' else "#444444"
-            
-            self.hud_length.setHtml(f"<div style='background-color:{bg_len}; color:white; padding:2px 4px; border:1px solid #777; font-family:Arial; font-size:12px; text-align:center;'>{display_length}</div>")
-            self.hud_angle.setHtml(f"<div style='background-color:{bg_ang}; color:white; padding:2px 4px; border:1px solid #777; font-family:Arial; font-size:12px; text-align:center;'>{display_angle}</div>")
-            
-            # 长度框定位：【修复】精准居中吸附在“长度虚线”上
-            mid_len_x = (dim_start.x() + dim_end.x()) / 2.0
-            mid_len_y = (dim_start.y() + dim_end.y()) / 2.0
-            self.hud_length.setPos(mid_len_x - 20 / lod, mid_len_y - 12 / lod)
-            
-            # 角度框定位：【修复】精准居中吸附在“角度虚线”上
-            mid_ang_rad = math.radians(ref_deg + span_math / 2.0)
-            arc_mid_x = ref_point.x() + arc_radius * math.cos(mid_ang_rad)
-            arc_mid_y = ref_point.y() - arc_radius * math.sin(mid_ang_rad)
-            self.hud_angle.setPos(arc_mid_x - 20 / lod, arc_mid_y - 12 / lod)
-            
-            self.hud_length.show()
-            self.hud_angle.show()
+                # ===============================================
+                # 直线/多段线原生逻辑：恢复您的蓝色居中框、扇形弧、虚线标注
+                # ===============================================
+                display_angle_value = snapped_angle
+                if ang_buffer:
+                    try: display_angle_value = float(ang_buffer)
+                    except ValueError: display_angle_value = snapped_angle
+                
+                ref_angle_rad = 0.0
+                if hasattr(self.current_tool, '_get_tangent_angle') and getattr(self.current_tool, 'segment_mode', '') == 'arc':
+                    ref_angle_rad = self.current_tool._get_tangent_angle()
+                    
+                ref_len = min(raw_length * 1.2, raw_length + 30 / lod)
+                rx = ref_point.x() + ref_len * math.cos(ref_angle_rad)
+                ry = ref_point.y() - ref_len * math.sin(ref_angle_rad)
+                self.dyn_ref_line.setLine(QLineF(ref_point.x(), ref_point.y(), rx, ry))
+                self.dyn_ref_line.show()
+
+                len_path = QPainterPath()
+                line_angle_rad = math.atan2(-(final_point.y() - ref_point.y()), final_point.x() - ref_point.x())
+                line_angle_deg = math.degrees(line_angle_rad)
+                
+                offset_dist = 25 / lod  
+                overshoot = 4 / lod     
+                gap = 3 / lod           
+                
+                nx = math.cos(line_angle_rad - math.pi/2)
+                ny = -math.sin(line_angle_rad - math.pi/2)
+                
+                dim_start = QPointF(ref_point.x() + offset_dist * nx, ref_point.y() + offset_dist * ny)
+                dim_end = QPointF(final_point.x() + offset_dist * nx, final_point.y() + offset_dist * ny)
+                
+                if raw_length > 10 / lod:
+                    len_path.moveTo(dim_start)
+                    len_path.lineTo(dim_end)
+                    
+                    ext1_start = QPointF(ref_point.x() + gap * nx, ref_point.y() + gap * ny)
+                    ext1_end = QPointF(ref_point.x() + (offset_dist + overshoot) * nx, ref_point.y() + (offset_dist + overshoot) * ny)
+                    len_path.moveTo(ext1_start)
+                    len_path.lineTo(ext1_end)
+                    
+                    ext2_start = QPointF(final_point.x() + gap * nx, final_point.y() + gap * ny)
+                    ext2_end = QPointF(final_point.x() + (offset_dist + overshoot) * nx, final_point.y() + (offset_dist + overshoot) * ny)
+                    len_path.moveTo(ext2_start)
+                    len_path.lineTo(ext2_end)
+                    
+                    len_path.addPath(make_arrow(dim_start.x(), dim_start.y(), line_angle_deg + 180, 7))
+                    len_path.addPath(make_arrow(dim_end.x(), dim_end.y(), line_angle_deg, 7))
+                    
+                    self.dyn_len_dim_item.setPath(len_path)
+                    self.dyn_len_dim_item.show()
+                else:
+                    self.dyn_len_dim_item.hide()
+
+                arc_radius = max(20.0 / lod, raw_length)
+                ref_deg = math.degrees(ref_angle_rad)
+                is_lower_half = final_point.y() > ref_point.y()
+                
+                if is_lower_half:
+                    target_math_angle = (360 - display_angle_value) % 360
+                else:
+                    target_math_angle = display_angle_value
+                
+                span_math = target_math_angle - ref_deg
+                
+                while span_math > 180: span_math -= 360
+                while span_math < -180: span_math += 360
+                
+                actual_display_angle = display_angle_value
+                    
+                if arc_radius > 5 / lod:
+                    arc_rect = QRectF(ref_point.x() - arc_radius, ref_point.y() - arc_radius, arc_radius * 2, arc_radius * 2)
+                    arc_path = QPainterPath()
+                    arc_path.arcMoveTo(arc_rect, ref_deg)
+                    arc_path.arcTo(arc_rect, ref_deg, span_math)
+                    
+                    self.dyn_arc_dim_item.setPath(arc_path)
+                    self.dyn_arc_dim_item.show()
+                else:
+                    self.dyn_arc_dim_item.hide()
+
+                if input_mode == 'length' and len_buffer:
+                    display_length = len_buffer
+                elif input_mode == 'angle' and tool_buffer:
+                    display_length = tool_buffer
+                else:
+                    display_length = f"{raw_length:.2f}"
+                
+                if input_mode == 'angle' and ang_buffer:
+                    display_angle = f"{ang_buffer}°"
+                elif input_mode == 'length' and tool_buffer:
+                    display_angle = f"{tool_buffer}°"
+                else:
+                    display_angle = f"{actual_display_angle:.0f}°"
+                
+                # 【完全恢复】：您原版的蓝色高亮和位置居中
+                bg_len = "#0055ff" if input_mode == 'length' else "#444444"
+                bg_ang = "#0055ff" if input_mode == 'angle' else "#444444"
+                
+                self.hud_length.setHtml(f"<div style='background-color:{bg_len}; color:white; padding:2px 4px; border:1px solid #777; font-family:Arial; font-size:12px; text-align:center;'>{display_length}</div>")
+                self.hud_angle.setHtml(f"<div style='background-color:{bg_ang}; color:white; padding:2px 4px; border:1px solid #777; font-family:Arial; font-size:12px; text-align:center;'>{display_angle}</div>")
+                
+                mid_len_x = (dim_start.x() + dim_end.x()) / 2.0
+                mid_len_y = (dim_start.y() + dim_end.y()) / 2.0
+                self.hud_length.setPos(mid_len_x - 20 / lod, mid_len_y - 12 / lod)
+                
+                mid_ang_rad = math.radians(ref_deg + span_math / 2.0)
+                arc_mid_x = ref_point.x() + arc_radius * math.cos(mid_ang_rad)
+                arc_mid_y = ref_point.y() - arc_radius * math.sin(mid_ang_rad)
+                self.hud_angle.setPos(arc_mid_x - 20 / lod, arc_mid_y - 12 / lod)
+                
+                self.hud_length.show()
+                self.hud_angle.show()
 
             # 右下角的极轴追踪提示
             hud_bg_color = "#a0a0a0"
-            hud_text = f"极轴追踪: {display_length} < {snapped_angle:.0f}°"
+            if is_rect_tool:
+                hud_text = f"正交: {display_length}"
+            else:
+                hud_text = f"极轴追踪: {display_length} < {snapped_angle:.0f}°"
+                
             if (is_polar_h or is_polar_v) and (is_track_h or is_track_v):
                 hud_text = f"交点 | 极轴: < {polar_angle:.0f}°, 端点: < {track_angle:.0f}°"; hud_bg_color = "#8b9dc3"
-            elif is_polar_h or is_polar_v: hud_text = f"极轴: {display_length} < {polar_angle:.0f}°"
+            elif is_polar_h or is_polar_v: 
+                hud_text = f"极轴: {display_length} < {polar_angle:.0f}°" if not is_rect_tool else hud_text
             elif is_track_h or is_track_v:
                 track_dist = math.hypot(final_point.x() - self.acquired_point.x(), final_point.y() - self.acquired_point.y())
                 hud_text = f"延长线: {track_dist:.4f} < {track_angle:.0f}°"
@@ -764,12 +868,12 @@ class CADGraphicsView(QGraphicsView):
             if is_object_snapped or is_polar_h or is_polar_v or is_track_h or is_track_v:
                 anchor_p = marker_p if (is_object_snapped and marker_p) else final_point
                 self.hud_polar_info.setHtml(f"<div style='background-color:{hud_bg_color}; color:black; padding:2px 4px; border:1px solid black; font-family:Arial; font-size:12px;'>{hud_text}</div>")
-                self.hud_polar_info.setPos(anchor_p.x() + 45 / lod, anchor_p.y() + 15 / lod)
+                
+                extra_y = 45 / lod if is_rect_tool else 45 / lod 
+                self.hud_polar_info.setPos(anchor_p.x() + 15 / lod, anchor_p.y() + extra_y)
                 self.hud_polar_info.show()
             else:
                 self.hud_polar_info.hide()
-        # ========================================================
-
 
         if hasattr(self.main_window, 'lbl_transform_info'):
             info_text = f" 当前坐标与尺寸提示  |  X: {final_point.x():.2f}   Y: {-final_point.y():.2f}   长度: {raw_length:.2f}   角度: {snapped_angle:.2f} "

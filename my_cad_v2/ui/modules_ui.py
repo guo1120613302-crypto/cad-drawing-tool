@@ -1,9 +1,12 @@
 # ui/modules_ui.py
+import math 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QToolBar, QDockWidget, 
                              QFormLayout, QLineEdit, QLabel, QListWidget, 
                              QGraphicsScene, QGridLayout, QPushButton, QFrame, QMenu, QToolButton)
 from PyQt6.QtCore import Qt, QSize, QPointF, QObject, QEvent
-from PyQt6.QtGui import QAction, QIcon, QPixmap, QPainter, QColor, QPen, QActionGroup, QPolygonF
+from PyQt6.QtGui import QAction, QIcon, QPixmap, QPainter, QColor, QPen, QActionGroup, QPolygonF,QPainterPath
+
+
 
 def generate_cad_style_icon(tool_type, has_submenu=False):
     pixmap = QPixmap(32, 32)
@@ -33,10 +36,28 @@ def generate_cad_style_icon(tool_type, has_submenu=False):
         painter.drawEllipse(19, 19, 2, 2); painter.drawEllipse(25, 5, 2, 2)
     elif tool_type == "矩形":
         painter.drawRect(ix, iy, iw, ih)
+
+    elif tool_type == "多边形":
+        poly = QPolygonF()
+        cx, cy, r = 16, 16, 11
+        for i in range(6):
+            a = math.radians(i * 60)
+            poly.append(QPointF(cx + r * math.cos(a), cy - r * math.sin(a)))
+        painter.drawPolygon(poly)
+        painter.drawPoint(cx, cy)
+
     elif tool_type == "圆":
         painter.drawEllipse(6, 6, 20, 20)
         painter.drawLine(14, 16, 18, 16)
         painter.drawLine(16, 14, 16, 18)
+    elif tool_type == "椭圆":
+        painter.drawEllipse(4, 10, 24, 12)
+        pen_dash = QPen(QColor(255, 255, 255, 150), 1, Qt.PenStyle.DashLine)
+        pen_dash.setCosmetic(True)
+        painter.setPen(pen_dash)
+        painter.drawLine(4, 16, 28, 16)
+        painter.drawLine(16, 10, 16, 22)
+        painter.setPen(pen)
     elif tool_type == "圆弧":
         painter.drawArc(6, 6, 20, 20, 0 * 16, 270 * 16)
         painter.drawEllipse(25, 15, 2, 2)
@@ -88,12 +109,20 @@ def generate_cad_style_icon(tool_type, has_submenu=False):
         painter.drawLine(4, 16, 12, 16); painter.drawLine(20, 16, 28, 16) 
         pen_break = QPen(QColor(255, 165, 0), 1.5); painter.setPen(pen_break)
         painter.drawLine(16, 12, 16, 20); painter.drawLine(12, 16, 20, 16)
+    elif tool_type == "样条曲线":
+        path = QPainterPath()
+        path.moveTo(4, 24)
+        path.cubicTo(12, 4, 20, 28, 28, 8)
+        painter.drawPath(path)
+        painter.drawEllipse(3, 23, 2, 2)
+        painter.drawEllipse(27, 7, 2, 2)
     elif tool_type == "标注":
         pen_solid = QPen(QColor(255, 255, 255), 1); painter.setPen(pen_solid)
         painter.drawLine(6, 6, 6, 26); painter.drawLine(26, 6, 26, 26); painter.drawLine(6, 16, 26, 16)
         painter.drawLine(6, 16, 9, 13); painter.drawLine(6, 16, 9, 19)
         painter.drawLine(26, 16, 23, 13); painter.drawLine(26, 16, 23, 19)
         font = painter.font(); font.setPointSize(6); painter.setFont(font); painter.drawText(12, 14, "10")
+
     
     if has_submenu:
         painter.setBrush(QColor(255, 255, 255))
@@ -148,8 +177,11 @@ def create_left_toolbox(main_window):
         ("选择", "选择", False, []),
         ("直线", "直线", False, []),
         ("多段线", "多段线", False, []),
+        ("多边形", "多边形", False, []),  
+        ("样条曲线", "样条曲线", False, []),# <-- 新增正多边形
         ("矩形", "矩形", False, []),
         ("圆", "圆", False, []),
+        ("椭圆", "椭圆", False, []),      # <-- 新增椭圆
         ("三点圆弧", "圆弧", True, [
             ("三点圆弧", "3point"),
             ("起点-圆心-终点", "center"),

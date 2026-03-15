@@ -76,7 +76,8 @@ class LineTool(BaseTool):
             self.start_tuple = end_tuple
             self.temp_item = SmartLineItem(self.start_tuple, self.start_tuple)
             self.temp_item.setFlags(QGraphicsItem.GraphicsItemFlag(0)) 
-            pen = QPen(QColor(255, 255, 255), 1, Qt.PenStyle.DashLine) 
+            # 【修改】：虚线改为实线 SolidLine
+            pen = QPen(QColor(255, 255, 255), 1, Qt.PenStyle.SolidLine) 
             pen.setCosmetic(True)
             self.temp_item.setPen(pen)
             
@@ -97,11 +98,12 @@ class LineTool(BaseTool):
                 
                 self.temp_item = SmartLineItem(self.start_tuple, self.start_tuple)
                 self.temp_item.setFlags(QGraphicsItem.GraphicsItemFlag(0)) 
-                pen = QPen(QColor(255, 255, 255), 1, Qt.PenStyle.DashLine) 
+                # 【修改】：虚线改为实线 SolidLine
+                pen = QPen(QColor(255, 255, 255), 1, Qt.PenStyle.SolidLine) 
                 pen.setCosmetic(True)
                 self.temp_item.setPen(pen)
                 
-                # 【Bug修复点3】：让画的第一根虚线就继承图层属性（如果图层关了，画的时候就是隐形的）
+                # 【Bug修复点3】：让画的第一根虚线就继承图层属性
                 self.canvas.layer_manager.apply_current_layer_props(self.temp_item)
                 self.canvas.scene().addItem(self.temp_item)
             else:
