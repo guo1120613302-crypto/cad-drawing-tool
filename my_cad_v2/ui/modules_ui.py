@@ -132,6 +132,30 @@ def generate_cad_style_icon(tool_type, has_submenu=False):
         painter.drawLine(26, 16, 23, 13); painter.drawLine(26, 16, 23, 19)
         font = painter.font(); font.setPointSize(6); painter.setFont(font); painter.drawText(12, 14, "10")
 
+    elif tool_type == "智能标注":
+        pen_dim = QPen(QColor(255, 255, 255), 1)
+        painter.setPen(pen_dim)
+        painter.drawLine(6, 24, 6, 8); painter.drawLine(26, 24, 26, 8)
+        painter.drawLine(6, 12, 26, 12)
+        # 画个小闪电代表“智能”
+        pen_spark = QPen(QColor(255, 200, 0), 1.5)
+        painter.setPen(pen_spark)
+        painter.drawLine(14, 8, 12, 16); painter.drawLine(12, 16, 18, 14); painter.drawLine(18, 14, 16, 22)
+    elif tool_type == "多重引线":
+        painter.drawLine(6, 24, 14, 14); painter.drawLine(14, 14, 26, 14)
+        painter.drawLine(16, 10, 26, 10); painter.drawLine(16, 18, 26, 18)
+        painter.drawEllipse(4, 22, 3, 3)
+
+    elif tool_type == "角度标注":
+        painter.drawLine(6, 26, 26, 26); painter.drawLine(6, 26, 20, 12)
+        painter.drawArc(10, 10, 32, 32, 135*16, 45*16)
+        painter.drawEllipse(18, 14, 2, 2); painter.drawEllipse(22, 24, 2, 2)
+    elif tool_type == "弧长标注":
+        painter.drawArc(6, 12, 20, 20, 45*16, 90*16)
+        painter.drawLine(6, 22, 6, 10); painter.drawLine(26, 22, 26, 10)
+        font = painter.font(); font.setPointSize(8); painter.setFont(font)
+        painter.drawText(12, 14, "⌒")
+
     
     if has_submenu:
         painter.setBrush(QColor(255, 255, 255))
@@ -186,12 +210,11 @@ def create_left_toolbox(main_window):
         ("选择", "选择", False, []),
         ("直线", "直线", False, []),
         ("多段线", "多段线", False, []),
-        ("多边形", "多边形", False, []),  
-        ("样条曲线", "样条曲线", False, []),# <-- 新增正多边形
+        ("样条曲线", "样条曲线", False, []),
+        ("多边形", "多边形", False, []),
         ("矩形", "矩形", False, []),
         ("圆", "圆", False, []),
-        ("椭圆", "椭圆", False, []),   
-        ("文字", "文字", False, []),   # <-- 新增椭圆
+        ("椭圆", "椭圆", False, []),
         ("三点圆弧", "圆弧", True, [
             ("三点圆弧", "3point"),
             ("起点-圆心-终点", "center"),
@@ -203,9 +226,13 @@ def create_left_toolbox(main_window):
         ("修剪", "修剪", False, []),
         ("延伸", "延伸", False, []),
         ("打断", "打断", False, []),
+        ("文字", "文字", False, []),
+        ("智能标注", "智能标注", False, []), 
+        ("角度标注", "角度标注", False, []),
+        ("弧长标注", "弧长标注", False, []),
+        ("多重引线", "多重引线", False, []),
         ("标注", "标注", False, [])
     ]
-    
     main_window.current_arc_tool = "三点圆弧"
     main_window.arc_action = None
 
@@ -216,9 +243,13 @@ def create_left_toolbox(main_window):
             action.setCheckable(True)
             if tool_name == "直线": 
                 action.setChecked(True)
+
+         
             
             ag.addAction(action)
             main_window.arc_action = action
+
+           
             
             def make_arc_click_handler():
                 def handler():

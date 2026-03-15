@@ -12,6 +12,13 @@ from core.core_items import SmartLineItem, SmartPolygonItem, SmartDimensionItem,
 from managers.color_manager import ColorManager
 from managers.layer_manager import LayerManager
 
+
+from tools.tool_smart_dim import SmartDimensionTool
+from tools.tool_multileader import MultileaderTool
+
+from tools.tool_dim_angle import DimAngleTool
+from tools.tool_dim_arclen import DimArcLenTool
+
 from tools.tool_text import TextTool
 
 # 导入所有工具
@@ -152,7 +159,11 @@ class CADGraphicsView(QGraphicsView):
             "打断": BreakTool(self),
             "标注": DimensionTool(self),
             "多边形": PolygonTool(self),
-            "椭圆": EllipseTool(self)
+            "椭圆": EllipseTool(self),
+            "智能标注": SmartDimensionTool(self),
+            "多重引线": MultileaderTool(self),
+            "角度标注": DimAngleTool(self),   # <--- 新增
+            "弧长标注": DimArcLenTool(self) # <--- 新增
         }
         self.current_tool = self.tools["直线"]
         self.current_tool.activate()

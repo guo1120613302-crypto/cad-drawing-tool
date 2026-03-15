@@ -1,9 +1,10 @@
 # core/core_items.py
-from PyQt6.QtWidgets import QGraphicsLineItem, QGraphicsPolygonItem, QGraphicsItem, QGraphicsTextItem
-from PyQt6.QtCore import QPointF, QLineF, QRectF, Qt
-from PyQt6.QtGui import QPen, QColor, QPainterPathStroker, QPolygonF, QPainterPath, QBrush, QFont
-
 import math
+from PyQt6.QtWidgets import (QGraphicsLineItem, QGraphicsPolygonItem, 
+                             QGraphicsItem, QGraphicsTextItem, QStyle)
+from PyQt6.QtCore import QPointF, QLineF, QRectF, Qt
+from PyQt6.QtGui import (QPen, QColor, QPainterPathStroker, QPolygonF, 
+                         QPainterPath, QBrush, QFont, QTextCursor)
 
 class SmartShapeMixin:
     """【架构升级】V2.0 几何图元统一直系血统 (ID卡)"""
@@ -328,9 +329,8 @@ class SmartCircleItem(QGraphicsItem, SmartShapeMixin):
         return QRectF(self.center[0] - r - margin, self.center[1] - r - margin, 2*r + 2*margin, 2*r + 2*margin)
 
     def get_geom_coords(self):
-        """【精度升级】：提供高精度物理轮廓供 Shapely 截断直线时使用"""
         pts = []
-        for i in range(720): # 每0.5度一个点，消除折线误差
+        for i in range(720):
             angle = math.radians(i * 0.5)
             pts.append((self.center[0] + self.radius * math.cos(angle), self.center[1] - self.radius * math.sin(angle)))
         pts.append(pts[0])
@@ -355,8 +355,6 @@ class SmartCircleItem(QGraphicsItem, SmartShapeMixin):
             pen.setWidth(3)
             
         painter.setPen(pen)
-        
-        # 启用全精度浮点路径渲染圆
         path = QPainterPath()
         path.addEllipse(QPointF(*self.center), self.radius, self.radius)
         painter.drawPath(path)
@@ -366,8 +364,9 @@ class SmartCircleItem(QGraphicsItem, SmartShapeMixin):
         r = self.radius
         return [(cx, cy), (cx+r, cy), (cx, cy-r), (cx-r, cy), (cx, cy+r)]
 
+
 class SmartOrthogonalDimensionItem(QGraphicsItem, SmartShapeMixin):
-    """V2.0 新增：专用的CAD标准智能线性标注实体 (支持正交投影与实心箭头)"""
+    """V2.0 专用CAD标准智能线性标注实体 (支持正交投影与实心箭头)"""
     geom_type = "ortho_dim"
     def __init__(self, p1, p2, offset_pt, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -570,8 +569,10 @@ class SmartOrthogonalDimensionItem(QGraphicsItem, SmartShapeMixin):
 
     def get_grips(self):
         return [self.coords[0], self.coords[1], self.coords[2]]
+
+
 class SmartPolylineItem(QGraphicsItem, SmartShapeMixin):
-    """V2.0 智能多段线实体，支持直线段和圆弧段（终极修复版）"""
+    """V2.0 智能多段线实体"""
     geom_type = "polyline"
     def __init__(self, coords, segments=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -619,7 +620,6 @@ class SmartPolylineItem(QGraphicsItem, SmartShapeMixin):
             path.lineTo(QPointF(*p2))
             return path
 
-        # 完全贴合标准凸度圆心推导
         d = -(chord / 2.0) * ((1.0 - bulge**2) / (2.0 * bulge))
         mid_x, mid_y = (p1[0] + p2[0]) / 2.0, (p1[1] + p2[1]) / 2.0
         
@@ -748,12 +748,10 @@ class SmartArcItem(QGraphicsItem, SmartShapeMixin):
         return QRectF(self.center[0] - r - margin, self.center[1] - r - margin, 2*r + 2*margin, 2*r + 2*margin)
 
     def get_geom_coords(self):
-        """【物理碰撞提升】：将多边形拟合精度拉满，确保 Shapely 完美切割其他线条"""
         pts = []
         span = self.end_angle - self.start_angle
         if span <= 0: 
             span += 360
-        # 每 0.5 度一个点，消除折线误差
         steps = max(72, int(span * 2)) 
         for i in range(steps + 1):
             angle = math.radians(self.start_angle + (span * i / steps))
@@ -784,7 +782,6 @@ class SmartArcItem(QGraphicsItem, SmartShapeMixin):
             pen.setWidth(3)
         painter.setPen(pen)
         
-        # 【终极渲染修复】：抛弃有精度丢失的 drawArc，启用浮点级 QPainterPath
         path = QPainterPath()
         rect = QRectF(self.center[0] - self.radius, self.center[1] - self.radius, 2*self.radius, 2*self.radius)
         span = self.end_angle - self.start_angle
@@ -804,6 +801,7 @@ class SmartArcItem(QGraphicsItem, SmartShapeMixin):
         p_mid = pts[len(pts)//2]
         return [p_start, p_mid, p_end, self.center]
 
+
 class SmartEllipseItem(QGraphicsItem, SmartShapeMixin):
     """V2.0 智能椭圆实体"""
     geom_type = "ellipse"
@@ -818,9 +816,8 @@ class SmartEllipseItem(QGraphicsItem, SmartShapeMixin):
         self.center = center
         self.rx = abs(rx)
         self.ry = abs(ry)
-        self.rotation_angle = rotation_angle # 椭圆长轴的倾斜角（数学角度，0-360）
+        self.rotation_angle = rotation_angle 
         
-        # 内部坐标记录法：[中心点, 轴1端点, 轴2端点]
         self.coords = [
             center, 
             (center[0] + rx * math.cos(math.radians(rotation_angle)), center[1] - rx * math.sin(math.radians(rotation_angle))),
@@ -838,7 +835,6 @@ class SmartEllipseItem(QGraphicsItem, SmartShapeMixin):
         return self._pen
 
     def set_coords(self, coords):
-        # 此处供未来夹点编辑使用
         self.coords = coords
         self.prepareGeometryChange()
         self.update()
@@ -854,20 +850,17 @@ class SmartEllipseItem(QGraphicsItem, SmartShapeMixin):
         super().hoverLeaveEvent(event)
 
     def boundingRect(self):
-        # 为考虑旋转，边界框设为以长轴为半径的外接圆包围盒
         max_r = max(self.rx, self.ry)
         margin = 10.0
         return QRectF(self.center[0] - max_r - margin, self.center[1] - max_r - margin, 2*max_r + 2*margin, 2*max_r + 2*margin)
 
     def get_geom_coords(self):
-        """物理碰撞：将椭圆散列为高精度多边形"""
         pts = []
         rad_rot = math.radians(self.rotation_angle)
         cos_rot = math.cos(rad_rot)
         sin_rot = math.sin(rad_rot)
         for i in range(360):
             t = math.radians(i)
-            # 参数方程 x = rx*cos(t), y = ry*sin(t) 并附加旋转
             px = self.rx * math.cos(t)
             py = self.ry * math.sin(t)
             rot_x = px * cos_rot - py * sin_rot
@@ -881,17 +874,15 @@ class SmartEllipseItem(QGraphicsItem, SmartShapeMixin):
         path.addEllipse(QRectF(-self.rx, -self.ry, 2*self.rx, 2*self.ry))
         
         trans_path = QPainterPath()
-        # 平移和旋转路径
         cx, cy = self.center
         for i in range(path.elementCount()):
             el = path.elementAt(i)
             rad = math.radians(self.rotation_angle)
-            # 缩放旋转后移至中心
             nx = cx + el.x * math.cos(rad) + el.y * math.sin(rad)
-            ny = cy - el.x * math.sin(rad) + el.y * math.cos(rad) # 屏幕坐标y反向
+            ny = cy - el.x * math.sin(rad) + el.y * math.cos(rad)
             if el.isMoveTo(): trans_path.moveTo(nx, ny)
             elif el.isLineTo(): trans_path.lineTo(nx, ny)
-            else: trans_path.lineTo(nx, ny) # 简化处理，实际物理碰撞走 get_geom_coords
+            else: trans_path.lineTo(nx, ny)
             
         stroker = QPainterPathStroker()
         stroker.setWidth(20.0)
@@ -909,7 +900,7 @@ class SmartEllipseItem(QGraphicsItem, SmartShapeMixin):
         
         painter.save()
         painter.translate(*self.center)
-        painter.rotate(-self.rotation_angle) # 屏幕坐标顺时针为正，数学逆时针为正，所以取反
+        painter.rotate(-self.rotation_angle)
         path = QPainterPath()
         path.addEllipse(QRectF(-self.rx, -self.ry, 2*self.rx, 2*self.ry))
         painter.drawPath(path)
@@ -925,6 +916,8 @@ class SmartEllipseItem(QGraphicsItem, SmartShapeMixin):
             (cx + self.ry * math.sin(rad), cy + self.ry * math.cos(rad)),
             (cx - self.ry * math.sin(rad), cy - self.ry * math.cos(rad))
         ]
+
+
 class SmartSplineItem(QGraphicsItem, SmartShapeMixin):
     """V2.0 智能样条曲线实体 (基于Catmull-Rom平滑插值)"""
     geom_type = "spline"
@@ -985,10 +978,8 @@ class SmartSplineItem(QGraphicsItem, SmartShapeMixin):
         return path
 
     def get_geom_coords(self):
-        """散列化物理边界供交点捕捉使用"""
         path = self._build_spline_path()
         pts = []
-        # 以1%为步长提取路径上的点
         for i in range(101):
             percent = i / 100.0
             p = path.pointAtPercent(percent)
@@ -1018,30 +1009,26 @@ class SmartSplineItem(QGraphicsItem, SmartShapeMixin):
         return list(self.coords)
 
 
-
 class SmartTextItem(QGraphicsTextItem, SmartShapeMixin):
     """V2.0 智能文字实体 (支持双击编辑、多行输入、图层颜色同步)"""
     geom_type = "text"
     def __init__(self, text, position, *args, **kwargs):
         super().__init__(text, *args, **kwargs)
         self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable | QGraphicsItem.GraphicsItemFlag.ItemIsFocusable)
-        self.setZValue(120) # 文字应浮在大多数线条上方
+        self.setZValue(120) 
         self.setPos(*position)
         self.coords = [position]
         self.hot_grip_index = -1
         
-        # 默认字体设置 (20号字)
         font = QFont("Arial", 20)
         self.setFont(font)
         self._pen = QPen(QColor(255, 255, 255), 1)
         self.setDefaultTextColor(QColor(255, 255, 255))
         
-        # 初始创建时，立刻进入文本编辑交互模式
         self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
 
     def setPen(self, pen):
         self._pen = pen
-        # 让文本颜色与画笔(图层)颜色同步
         self.setDefaultTextColor(pen.color())
         self.update()
 
@@ -1054,7 +1041,7 @@ class SmartTextItem(QGraphicsTextItem, SmartShapeMixin):
             self.coords = coords
 
     def get_geom_coords(self):
-        return [] # 文本不参与物理求交
+        return [] 
 
     def get_grips(self):
         rect = self.boundingRect()
@@ -1062,24 +1049,367 @@ class SmartTextItem(QGraphicsTextItem, SmartShapeMixin):
 
     def focusOutEvent(self, event):
         super().focusOutEvent(event)
-        # 失去焦点时（点空白处），取消文本编辑状态，使其变回普通的、可框选拖动的CAD图元
         cursor = self.textCursor()
         cursor.clearSelection()
         self.setTextCursor(cursor)
         self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
 
     def mouseDoubleClickEvent(self, event):
-        # 双击图元：重新唤醒文字编辑器
         if self.textInteractionFlags() == Qt.TextInteractionFlag.NoTextInteraction:
             self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
         self.setFocus()
         super().mouseDoubleClickEvent(event)
         
     def paint(self, painter, option, widget=None):
-        # 拦截原生的虚线选择框，画出我们统一风格的蓝色高亮框
-        option.state &= ~style().State_Selected if hasattr(self, 'style') else option.state
+        option.state &= ~QStyle.StateFlag.State_Selected
         super().paint(painter, option, widget)
         if self.isSelected():
             painter.setPen(QPen(QColor(0, 120, 215), 1, Qt.PenStyle.DashLine))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(self.boundingRect())
+
+
+class SmartLeaderItem(QGraphicsItem, SmartShapeMixin):
+    """V2.0 智能多重引线实体 (含原位文本框)"""
+    geom_type = "leader"
+    def __init__(self, arrow_pt, landing_pt, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable | QGraphicsItem.GraphicsItemFlag.ItemIsFocusable)
+        self.setZValue(125)
+        self.coords = [arrow_pt, landing_pt]
+        
+        self.text_item = QGraphicsTextItem(self)
+        self.text_item.setFont(QFont("Arial", 14))
+        self.text_item.setDefaultTextColor(QColor(255, 255, 255))
+        self.text_item.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+        self.text_item.setPlainText("输入引线注释...")
+        self.text_item.document().contentsChanged.connect(self._update_layout)
+        
+        self._pen = QPen(QColor(255, 255, 255), 1)
+        self._pen.setCosmetic(True)
+        self._update_layout()
+
+    def setPen(self, pen):
+        self._pen = pen
+        self.text_item.setDefaultTextColor(pen.color())
+        self.update()
+
+    def pen(self): return self._pen
+
+    def set_coords(self, coords):
+        self.coords = coords
+        self._update_layout()
+
+    def _update_layout(self):
+        arrow_pt, landing_pt = self.coords
+        is_right = landing_pt[0] >= arrow_pt[0]
+        landing_len = 20.0
+        end_x = landing_pt[0] + (landing_len if is_right else -landing_len)
+        
+        br = self.text_item.boundingRect()
+        if is_right:
+            self.text_item.setPos(end_x + 5, landing_pt[1] - br.height() / 2)
+        else:
+            self.text_item.setPos(end_x - br.width() - 5, landing_pt[1] - br.height() / 2)
+        self.prepareGeometryChange()
+        self.update()
+
+    def get_geom_coords(self): return []
+    def get_grips(self): return self.coords
+
+    def boundingRect(self):
+        return self.childrenBoundingRect().united(QRectF(self.coords[0][0]-10, self.coords[0][1]-10, 20, 20))
+
+    def paint(self, painter, option, widget=None):
+        option.state &= ~QStyle.StateFlag.State_Selected
+        pen = QPen(self._pen)
+        if self.isSelected():
+            pen.setWidth(2)
+            pen.setColor(QColor(0, 120, 215))
+        painter.setPen(pen)
+        
+        arrow_pt, landing_pt = self.coords
+        is_right = landing_pt[0] >= arrow_pt[0]
+        
+        lod = painter.worldTransform().m11()
+        scale_f = 1.0 / lod if lod > 0 else 1.0
+        landing_len = 20.0 * scale_f
+        end_x = landing_pt[0] + (landing_len if is_right else -landing_len)
+        
+        painter.drawLine(QPointF(*arrow_pt), QPointF(*landing_pt))
+        painter.drawLine(QPointF(*landing_pt), QPointF(end_x, landing_pt[1]))
+        
+        dx, dy = landing_pt[0] - arrow_pt[0], landing_pt[1] - arrow_pt[1]
+        dist = math.hypot(dx, dy)
+        if dist > 1e-4:
+            ux, uy = dx/dist, dy/dist
+            arrow_size = 8 * scale_f
+            nx, ny = -uy, ux
+            p1 = QPointF(arrow_pt[0] + arrow_size*ux + arrow_size*nx*0.25, arrow_pt[1] + arrow_size*uy + arrow_size*ny*0.25)
+            p2 = QPointF(arrow_pt[0] + arrow_size*ux - arrow_size*nx*0.25, arrow_pt[1] + arrow_size*uy - arrow_size*ny*0.25)
+            painter.setBrush(pen.color())
+            painter.drawPolygon(QPointF(*arrow_pt), p1, p2)
+
+
+class SmartRadiusDimensionItem(QGraphicsItem, SmartShapeMixin):
+    """V2.0 智能半径/直径标注实体 (标准CAD水平着陆线样式)"""
+    geom_type = "rad_dim"
+    def __init__(self, center, edge_pt, prefix="R", *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable | QGraphicsItem.GraphicsItemFlag.ItemIsFocusable)
+        self.setZValue(110)
+        self.coords = [center, edge_pt]
+        self.prefix = prefix
+        self._pen = QPen(QColor(255, 255, 255), 1)
+        self._pen.setCosmetic(True)
+
+    def setPen(self, pen):
+        self._pen = pen
+        self.update()
+
+    def pen(self): return self._pen
+
+    def set_coords(self, coords):
+        self.coords = coords
+        self.prepareGeometryChange()
+        self.update()
+
+    def get_geom_coords(self): return []
+    def get_grips(self): return self.coords
+
+    def boundingRect(self):
+        c, e = self.coords
+        margin = 100.0
+        return QRectF(min(c[0], e[0]) - margin, min(c[1], e[1]) - margin, 
+                      abs(e[0]-c[0]) + 2*margin, abs(e[1]-c[1]) + 2*margin)
+
+    def paint(self, painter, option, widget=None):
+        option.state &= ~QStyle.StateFlag.State_Selected
+        pen = QPen(self._pen)
+        if self.isSelected():
+            pen.setWidth(2)
+            pen.setColor(QColor(0, 120, 215))
+        painter.setPen(pen)
+
+        c, e = self.coords
+        dx, dy = e[0] - c[0], e[1] - c[1]
+        dist = math.hypot(dx, dy)
+        if dist < 1e-4: return
+
+        # 1. 画中心到边缘的连线
+        painter.drawLine(QPointF(*c), QPointF(*e))
+
+        lod = painter.worldTransform().m11()
+        scale_f = 1.0 / lod if lod > 0 else 1.0
+        arrow_size = 8 * scale_f
+        
+        # 2. 绘制边缘处的箭头
+        ux, uy = dx/dist, dy/dist
+        nx, ny = -uy, ux
+        p1 = QPointF(e[0] - arrow_size*ux + arrow_size*nx*0.25, e[1] - arrow_size*uy + arrow_size*ny*0.25)
+        p2 = QPointF(e[0] - arrow_size*ux - arrow_size*nx*0.25, e[1] - arrow_size*uy - arrow_size*ny*0.25)
+        painter.setBrush(pen.color())
+        painter.drawPolygon(QPointF(*e), p1, p2)
+
+        # 3. 绘制 CAD 标准的水平着陆线
+        landing_len = 15 * scale_f
+        is_right = dx >= 0
+        end_x = e[0] + (landing_len if is_right else -landing_len)
+        painter.drawLine(QPointF(*e), QPointF(end_x, e[1]))
+
+        # 4. 在水平线上方渲染文字
+        text_str = f"{self.prefix} {dist:.2f}"
+        font = painter.font()
+        font.setPointSize(10)
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+        tw = fm.horizontalAdvance(text_str)
+        
+        text_x = e[0] + (2*scale_f if is_right else -tw - 2*scale_f)
+        text_y = e[1] - 3*scale_f
+        painter.drawText(int(text_x), int(text_y), text_str)
+
+
+class SmartAngleDimensionItem(QGraphicsItem, SmartShapeMixin):
+    """V2.0 智能角度标注实体"""
+    geom_type = "angle_dim"
+    def __init__(self, p1, center, p2, offset_pt, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable | QGraphicsItem.GraphicsItemFlag.ItemIsFocusable)
+        self.setZValue(110)
+        self.coords = [p1, center, p2, offset_pt]
+        self._pen = QPen(QColor(255, 255, 255), 1)
+        self._pen.setCosmetic(True)
+
+    def setPen(self, pen):
+        self._pen = pen
+        self.update()
+
+    def pen(self): return self._pen
+
+    def set_coords(self, coords):
+        self.coords = coords
+        self.prepareGeometryChange()
+        self.update()
+
+    def get_geom_coords(self): return []
+    def get_grips(self): return self.coords
+
+    def boundingRect(self):
+        c = self.coords[1]
+        margin = 300.0
+        return QRectF(c[0] - margin, c[1] - margin, 2*margin, 2*margin)
+
+    def paint(self, painter, option, widget=None):
+        option.state &= ~QStyle.StateFlag.State_Selected
+        pen = QPen(self._pen)
+        if self.isSelected():
+            pen.setWidth(2)
+            pen.setColor(QColor(0, 120, 215))
+        painter.setPen(pen)
+
+        p1, c, p2, offset_pt = self.coords
+        radius = math.hypot(offset_pt[0] - c[0], offset_pt[1] - c[1])
+        if radius < 1e-4: return
+
+        a1 = math.degrees(math.atan2(-(p1[1] - c[1]), p1[0] - c[0]))
+        a2 = math.degrees(math.atan2(-(p2[1] - c[1]), p2[0] - c[0]))
+        
+        diff = (a2 - a1) % 360
+        if diff > 180:
+            a1, a2 = a2, a1
+            diff = 360 - diff
+
+        path = QPainterPath()
+        rect = QRectF(c[0] - radius, c[1] - radius, 2*radius, 2*radius)
+        path.arcMoveTo(rect, a1)
+        path.arcTo(rect, a1, diff)
+        painter.drawPath(path)
+
+        # 【核心修复】：将箭头方向改为沿圆弧的“切线方向”，使其顺着弧线贴合
+        def draw_arrow(angle_deg, is_start):
+            lod = painter.worldTransform().m11()
+            scale_f = 1.0 / lod if lod > 0 else 1.0
+            arrow_size = 10 * scale_f
+            arrow_width = 2.5 * scale_f  # 箭头半宽
+            
+            rad = math.radians(angle_deg)
+            
+            # 箭头顶点贴在边上
+            tip_x = c[0] + radius * math.cos(rad)
+            tip_y = c[1] - radius * math.sin(rad)
+            tip = QPointF(tip_x, tip_y)
+            
+            # 计算圆弧在该点的切线向量 (逆时针方向)
+            tx = -math.sin(rad)
+            ty = -math.cos(rad)
+            
+            if is_start:
+                # 起点处的箭头：指向顺时针方向 (顺着弧线往回指，顶到边上)
+                dir_x, dir_y = -tx, -ty
+            else:
+                # 终点处的箭头：指向逆时针方向 (顺着弧线往前指，顶到边上)
+                dir_x, dir_y = tx, ty
+                
+            norm_x, norm_y = -dir_y, dir_x
+            
+            base_x = tip_x - arrow_size * dir_x
+            base_y = tip_y - arrow_size * dir_y
+            
+            p1 = QPointF(base_x + arrow_width * norm_x, base_y + arrow_width * norm_y)
+            p2 = QPointF(base_x - arrow_width * norm_x, base_y - arrow_width * norm_y)
+            
+            painter.setBrush(pen.color())
+            painter.drawPolygon(tip, p1, p2)
+
+        # 绘制首尾两个箭头
+        draw_arrow(a1, True)
+        draw_arrow(a1 + diff, False)
+
+        mid_a = a1 + diff / 2.0
+        mid_rad = math.radians(mid_a)
+        text_str = f"{diff:.1f}°"
+        font = painter.font()
+        font.setPointSize(10)
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+        tw = fm.horizontalAdvance(text_str)
+        
+        tx = c[0] + (radius + 15)*math.cos(mid_rad) - tw/2
+        ty = c[1] - (radius + 15)*math.sin(mid_rad) + 5
+        painter.drawText(int(tx), int(ty), text_str)
+class SmartArcLengthDimensionItem(QGraphicsItem, SmartShapeMixin):
+    """V2.0 智能弧长标注实体"""
+    geom_type = "arclen_dim"
+    def __init__(self, center, radius, start_angle, end_angle, offset_pt, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable | QGraphicsItem.GraphicsItemFlag.ItemIsFocusable)
+        self.setZValue(110)
+        self.coords = [center, offset_pt]
+        self.radius = radius
+        self.start_angle = start_angle
+        self.end_angle = end_angle
+        self._pen = QPen(QColor(255, 255, 255), 1)
+        self._pen.setCosmetic(True)
+
+    def setPen(self, pen):
+        self._pen = pen
+        self.update()
+
+    def pen(self): return self._pen
+
+    def set_coords(self, coords):
+        self.coords = coords
+        self.prepareGeometryChange()
+        self.update()
+
+    def get_geom_coords(self): return []
+    def get_grips(self): return self.coords
+
+    def boundingRect(self):
+        c = self.coords[0]
+        margin = 300.0
+        return QRectF(c[0] - margin, c[1] - margin, 2*margin, 2*margin)
+
+    def paint(self, painter, option, widget=None):
+        option.state &= ~QStyle.StateFlag.State_Selected
+        pen = QPen(self._pen)
+        if self.isSelected():
+            pen.setWidth(2)
+            pen.setColor(QColor(0, 120, 215))
+        painter.setPen(pen)
+
+        c, offset_pt = self.coords
+        dim_radius = math.hypot(offset_pt[0] - c[0], offset_pt[1] - c[1])
+        if dim_radius < 1e-4: return
+
+        span = self.end_angle - self.start_angle
+        if span <= 0: span += 360
+
+        rad1, rad2 = math.radians(self.start_angle), math.radians(self.end_angle)
+        p1 = QPointF(c[0] + self.radius*math.cos(rad1), c[1] - self.radius*math.sin(rad1))
+        e1 = QPointF(c[0] + (dim_radius + 10)*math.cos(rad1), c[1] - (dim_radius + 10)*math.sin(rad1))
+        p2 = QPointF(c[0] + self.radius*math.cos(rad2), c[1] - self.radius*math.sin(rad2))
+        e2 = QPointF(c[0] + (dim_radius + 10)*math.cos(rad2), c[1] - (dim_radius + 10)*math.sin(rad2))
+        painter.drawLine(p1, e1)
+        painter.drawLine(p2, e2)
+
+        path = QPainterPath()
+        rect = QRectF(c[0] - dim_radius, c[1] - dim_radius, 2*dim_radius, 2*dim_radius)
+        path.arcMoveTo(rect, self.start_angle)
+        path.arcTo(rect, self.start_angle, span)
+        painter.drawPath(path)
+
+        arc_length = 2 * math.pi * self.radius * (span / 360.0)
+        text_str = f"⌒ {arc_length:.2f}"
+        font = painter.font()
+        font.setPointSize(10)
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+        tw = fm.horizontalAdvance(text_str)
+        
+        mid_a = self.start_angle + span / 2.0
+        mid_rad = math.radians(mid_a)
+        tx = c[0] + (dim_radius + 15)*math.cos(mid_rad) - tw/2
+        ty = c[1] - (dim_radius + 15)*math.sin(mid_rad) + 5
+        painter.drawText(int(tx), int(ty), text_str)
