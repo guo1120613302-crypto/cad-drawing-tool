@@ -12,6 +12,8 @@ from core.core_items import SmartLineItem, SmartPolygonItem, SmartDimensionItem,
 from managers.color_manager import ColorManager
 from managers.layer_manager import LayerManager
 
+from tools.tool_text import TextTool
+
 # 导入所有工具
 from tools.tool_select import SelectTool
 from tools.tool_line import LineTool
@@ -141,6 +143,7 @@ class CADGraphicsView(QGraphicsView):
             "矩形": RectTool(self),
             "圆": CircleTool(self),
             "圆弧": ArcTool(self),
+            "文字": TextTool(self),
             "偏移": OffsetTool(self),
             "旋转": RotateTool(self),
             "镜像": MirrorTool(self),

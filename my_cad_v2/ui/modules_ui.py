@@ -58,6 +58,15 @@ def generate_cad_style_icon(tool_type, has_submenu=False):
         painter.drawLine(4, 16, 28, 16)
         painter.drawLine(16, 10, 16, 22)
         painter.setPen(pen)
+
+    elif tool_type == "文字":
+        font = painter.font()
+        font.setPointSize(16)
+        font.setBold(True)
+        font.setFamily("Arial")
+        painter.setFont(font)
+        painter.drawText(ix, iy, iw, ih, Qt.AlignmentFlag.AlignCenter, "T")
+
     elif tool_type == "圆弧":
         painter.drawArc(6, 6, 20, 20, 0 * 16, 270 * 16)
         painter.drawEllipse(25, 15, 2, 2)
@@ -181,7 +190,8 @@ def create_left_toolbox(main_window):
         ("样条曲线", "样条曲线", False, []),# <-- 新增正多边形
         ("矩形", "矩形", False, []),
         ("圆", "圆", False, []),
-        ("椭圆", "椭圆", False, []),      # <-- 新增椭圆
+        ("椭圆", "椭圆", False, []),   
+        ("文字", "文字", False, []),   # <-- 新增椭圆
         ("三点圆弧", "圆弧", True, [
             ("三点圆弧", "3point"),
             ("起点-圆心-终点", "center"),

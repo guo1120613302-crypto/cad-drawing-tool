@@ -1,7 +1,7 @@
 # core/core_items.py
-from PyQt6.QtWidgets import QGraphicsLineItem, QGraphicsPolygonItem, QGraphicsItem
-from PyQt6.QtCore import QPointF, QLineF, QRectF
-from PyQt6.QtGui import QPen, QColor, QPainterPathStroker, QPolygonF, QPainterPath, QBrush
+from PyQt6.QtWidgets import QGraphicsLineItem, QGraphicsPolygonItem, QGraphicsItem, QGraphicsTextItem
+from PyQt6.QtCore import QPointF, QLineF, QRectF, Qt
+from PyQt6.QtGui import QPen, QColor, QPainterPathStroker, QPolygonF, QPainterPath, QBrush, QFont
 
 import math
 
@@ -1016,3 +1016,70 @@ class SmartSplineItem(QGraphicsItem, SmartShapeMixin):
 
     def get_grips(self):
         return list(self.coords)
+
+
+
+class SmartTextItem(QGraphicsTextItem, SmartShapeMixin):
+    """V2.0 智能文字实体 (支持双击编辑、多行输入、图层颜色同步)"""
+    geom_type = "text"
+    def __init__(self, text, position, *args, **kwargs):
+        super().__init__(text, *args, **kwargs)
+        self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable | QGraphicsItem.GraphicsItemFlag.ItemIsFocusable)
+        self.setZValue(120) # 文字应浮在大多数线条上方
+        self.setPos(*position)
+        self.coords = [position]
+        self.hot_grip_index = -1
+        
+        # 默认字体设置 (20号字)
+        font = QFont("Arial", 20)
+        self.setFont(font)
+        self._pen = QPen(QColor(255, 255, 255), 1)
+        self.setDefaultTextColor(QColor(255, 255, 255))
+        
+        # 初始创建时，立刻进入文本编辑交互模式
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+
+    def setPen(self, pen):
+        self._pen = pen
+        # 让文本颜色与画笔(图层)颜色同步
+        self.setDefaultTextColor(pen.color())
+        self.update()
+
+    def pen(self): 
+        return self._pen
+
+    def set_coords(self, coords):
+        if coords:
+            self.setPos(*coords[0])
+            self.coords = coords
+
+    def get_geom_coords(self):
+        return [] # 文本不参与物理求交
+
+    def get_grips(self):
+        rect = self.boundingRect()
+        return [(self.x(), self.y()), (self.x() + rect.width(), self.y() + rect.height())]
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        # 失去焦点时（点空白处），取消文本编辑状态，使其变回普通的、可框选拖动的CAD图元
+        cursor = self.textCursor()
+        cursor.clearSelection()
+        self.setTextCursor(cursor)
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+
+    def mouseDoubleClickEvent(self, event):
+        # 双击图元：重新唤醒文字编辑器
+        if self.textInteractionFlags() == Qt.TextInteractionFlag.NoTextInteraction:
+            self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
+        self.setFocus()
+        super().mouseDoubleClickEvent(event)
+        
+    def paint(self, painter, option, widget=None):
+        # 拦截原生的虚线选择框，画出我们统一风格的蓝色高亮框
+        option.state &= ~style().State_Selected if hasattr(self, 'style') else option.state
+        super().paint(painter, option, widget)
+        if self.isSelected():
+            painter.setPen(QPen(QColor(0, 120, 215), 1, Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(self.boundingRect())
