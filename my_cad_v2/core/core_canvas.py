@@ -1,4 +1,10 @@
 # core/core_canvas.py
+
+from core.core_items import (SmartLineItem, SmartPolygonItem, SmartDimensionItem, SmartCircleItem, 
+                             SmartPolylineItem, SmartArcItem, SmartEllipseItem, SmartSplineItem, 
+                             SmartTextItem, SmartLeaderItem, SmartOrthogonalDimensionItem, 
+                             SmartRadiusDimensionItem, SmartAngleDimensionItem, SmartArcLengthDimensionItem)
+
 from tools.tool_spline import SplineTool
 from PyQt6.QtWidgets import QGraphicsView, QGraphicsLineItem, QGraphicsTextItem, QGraphicsRectItem, QGraphicsItem, QLabel, QGraphicsPathItem
 from PyQt6.QtCore import Qt, QLineF, QPointF, QRectF
@@ -7,7 +13,6 @@ import math
 import traceback
 
 from utils.geom_engine import GeometryEngine
-from core.core_items import SmartLineItem, SmartPolygonItem, SmartDimensionItem, SmartCircleItem, SmartPolylineItem
 
 from managers.color_manager import ColorManager
 from managers.layer_manager import LayerManager
@@ -20,8 +25,22 @@ from tools.tool_dim_angle import DimAngleTool
 from tools.tool_dim_arclen import DimArcLenTool
 
 from tools.tool_text import TextTool
+from tools.tool_chamfer import ChamferTool
+from tools.tool_copy import CopyTool
 
-# 导入所有工具
+
+from tools.tool_resize import ResizeTool
+
+from tools.tool_fillet import FilletTool
+
+from tools.tool_array import ArrayTool
+
+from tools.tool_join import JoinTool
+
+
+from tools.tool_block import BlockTool
+from tools.tool_explode import ExplodeTool
+
 from tools.tool_select import SelectTool
 from tools.tool_line import LineTool
 from tools.tool_rect import RectTool
@@ -39,29 +58,63 @@ from tools.tool_arc import ArcTool
 from tools.tool_polygon import PolygonTool
 from tools.tool_ellipse import EllipseTool
 
+def create_item_from_clipboard(d, dx, dy):
+    ItemClass = d['type']
+    
+    # ================= 新增：拦截并实例化块引用 =================
+    if ItemClass == 'block':
+        from core.core_items import SmartBlockReference
+        item = SmartBlockReference(d['block_name'])
+        old_x, old_y = d['pos']
+        item.setPos(old_x + dx, old_y + dy)
+        item.rebuild_from_registry() # 从注册表加载内部图形
+        return item
+    # ==========================================================
+    
+    new_c = [(x + dx, y + dy) for x, y in d['coords']]
+    
+    if ItemClass in (SmartPolygonItem, SmartSplineItem):
+        item = ItemClass(new_c)
+    elif ItemClass == SmartPolylineItem:
+        item = ItemClass(new_c, segments=d.get('segments'))
+    elif ItemClass in (SmartDimensionItem, SmartOrthogonalDimensionItem):
+        item = ItemClass(new_c[0], new_c[1], new_c[2])
+    elif ItemClass == SmartLeaderItem:
+        item = ItemClass(new_c[0], new_c[1])
+        if 'text' in d: item.text_item.setPlainText(d['text'])
+    elif ItemClass == SmartCircleItem:
+        r = math.hypot(new_c[1][0]-new_c[0][0], new_c[1][1]-new_c[0][1])
+        item = ItemClass(new_c[0], r)
+    elif ItemClass == SmartArcItem:
+        item = ItemClass(new_c[0], d.get('radius', 10), d.get('start_angle', 0), d.get('end_angle', 180))
+    elif ItemClass == SmartEllipseItem:
+        item = ItemClass(new_c[0], d.get('rx', 10), d.get('ry', 10), d.get('rotation_angle', 0))
+    elif ItemClass == SmartTextItem:
+        item = ItemClass(d.get('text', '文本'), new_c[0])
+    elif ItemClass == SmartRadiusDimensionItem:
+        item = ItemClass(new_c[0], new_c[1], prefix=d.get('prefix', 'R'))
+    elif ItemClass == SmartAngleDimensionItem:
+        item = ItemClass(new_c[0], new_c[1], new_c[2], new_c[3])
+    elif ItemClass == SmartArcLengthDimensionItem:
+        item = ItemClass(new_c[0], d.get('radius', 10), d.get('start_angle', 0), d.get('end_angle', 180), new_c[1])
+    else: # 兜底给直线等两点图元
+        item = ItemClass(new_c[0], new_c[1])
+    return item
+
 class CommandPasteGeom(QUndoCommand):
     """复制粘贴对应的撤销栈封装"""
-    def __init__(self, scene, data):
+    def __init__(self, scene, data, dx, dy):
         super().__init__()
         self.scene = scene
         self.created_items = []
         for d in data:
-            ItemClass = d['type']
-            new_c = [(x + 50, y + 50) for x, y in d['coords']] 
-            
-            if ItemClass == SmartPolygonItem or ItemClass == SmartPolylineItem:
-                item = ItemClass(new_c)
-            elif ItemClass == SmartDimensionItem:
-                item = ItemClass(new_c[0], new_c[1], new_c[2])
-            elif ItemClass == SmartCircleItem:
-                r = math.hypot(new_c[1][0]-new_c[0][0], new_c[1][1]-new_c[0][1])
-                item = ItemClass(new_c[0], r)
-            else:
-                item = ItemClass(new_c[0], new_c[1])
-                
-            pen = QPen(QColor(255, 255, 255), 1)
-            pen.setCosmetic(True)
-            item.setPen(pen)
+            item = create_item_from_clipboard(d, dx, dy)
+            # ======== 修改这里：增加 hasattr 判断 ========
+            if hasattr(item, 'setPen'):
+                pen = QPen(QColor(255, 255, 255), 1)
+                pen.setCosmetic(True)
+                item.setPen(pen)
+            # ==========================================
             self.created_items.append(item)
             
     def redo(self):
@@ -163,7 +216,15 @@ class CADGraphicsView(QGraphicsView):
             "智能标注": SmartDimensionTool(self),
             "多重引线": MultileaderTool(self),
             "角度标注": DimAngleTool(self),   # <--- 新增
-            "弧长标注": DimArcLenTool(self) # <--- 新增
+            "弧长标注": DimArcLenTool(self), # <--- 新增
+            "倒圆角": FilletTool(self),
+            "倒直角": ChamferTool(self),
+            "复制": CopyTool(self),
+            "比例缩放": ResizeTool(self),
+            "阵列": ArrayTool(self),
+            "合并": JoinTool(self),
+            "打散": ExplodeTool(self),   # 升级打散
+            "建块": BlockTool(self)      # 新增建块
         }
         self.current_tool = self.tools["直线"]
         self.current_tool.activate()
@@ -221,7 +282,6 @@ class CADGraphicsView(QGraphicsView):
         self.hud_angle.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         self.scene().addItem(self.hud_angle)
 
-        # === 【全局底层显示重构】：新增测量基准虚线、带箭头的长度和角度标注 ===
         self.dyn_ref_line = QGraphicsLineItem()
         pen_ref = QPen(QColor(255, 255, 255, 100), 1, Qt.PenStyle.DashLine)
         pen_ref.setCosmetic(True)
@@ -242,11 +302,10 @@ class CADGraphicsView(QGraphicsView):
         
         self.dyn_arc_dim_item = QGraphicsPathItem()
         self.dyn_arc_dim_item.setPen(pen_dim)
-        self.dyn_arc_dim_item.setBrush(QColor(Qt.GlobalColor.transparent)) # 角度不要填充，极简
+        self.dyn_arc_dim_item.setBrush(QColor(Qt.GlobalColor.transparent)) 
         self.dyn_arc_dim_item.setZValue(900)
         self.scene().addItem(self.dyn_arc_dim_item)
         self.dyn_arc_dim_item.hide()
-        # ======================================================
         
         self.hud_polar_info = HUDProxy(self)
 
@@ -262,6 +321,15 @@ class CADGraphicsView(QGraphicsView):
                     if action.text() == tool_name:
                         action.setChecked(True)
                         break
+
+    def _cleanup_paste_preview(self):
+        self._is_pasting = False
+        if hasattr(self, '_paste_preview_items'):
+            for item in self._paste_preview_items:
+                if item.scene() == self.scene():
+                    self.scene().removeItem(item)
+            self._paste_preview_items.clear()
+
 
     def _cleanup_tracking_huds(self):
         self.acquired_point = None
@@ -355,7 +423,9 @@ class CADGraphicsView(QGraphicsView):
         if isinstance(active_tool, SelectTool) and active_tool.is_moving and active_tool.move_start_pos:
             exclude_items = active_tool.move_items
             base_point = active_tool.move_start_pos
-            for item in exclude_items: moving_grips.extend(item.get_grips())
+            for item in exclude_items:
+                real_item = item['item'] if isinstance(item, dict) else item
+                moving_grips.extend(real_item.get_grips())
         elif hasattr(active_tool, 'state') and active_tool.__class__.__name__ == 'MoveTool' and active_tool.state == 2 and active_tool.base_point:
             exclude_items = active_tool.target_items
             base_point = active_tool.base_point
@@ -370,10 +440,9 @@ class CADGraphicsView(QGraphicsView):
         static_grips = []
         for item in valid_items: static_grips.extend(item.get_grips())
         
-        if hasattr(active_tool, 'points') and active_tool.__class__.__name__ == 'PolylineTool':
+        if hasattr(active_tool, 'points') and active_tool.__class__.__name__ in ('PolylineTool', 'SplineTool', 'PolygonTool'):
             for pt in active_tool.points:
                 static_grips.append(pt)
-
         endpoint_candidates = []
         intersection_candidates = []
         nearest_candidates = []
@@ -598,7 +667,6 @@ class CADGraphicsView(QGraphicsView):
         else:
             self.tracking_line.hide(); self.track_marker_h.hide(); self.track_marker_v.hide()
 
-        # === 【核心重构：全局原生底层动态 HUD，极简虚线标注】 ===
         def make_arrow(tip_x, tip_y, angle_deg, size=8):
             arrow = QPainterPath()
             arrow.moveTo(tip_x, tip_y)
@@ -616,18 +684,11 @@ class CADGraphicsView(QGraphicsView):
             len_buffer = getattr(self.current_tool, 'length_buffer', '')
             tool_buffer = self.current_tool.get_input_buffer()
             
-            
-
-
             is_rect_tool = self.current_tool.__class__.__name__ == 'RectTool'
-            
             current_tool_name = self.current_tool.__class__.__name__
             is_circle_style_hud = current_tool_name in ['CircleTool', 'PolygonTool', 'EllipseTool']
 
             if is_rect_tool:
-                # ===============================================
-                # 矩形专用逻辑：在右下角引线处渲染尺寸线，将蓝色高亮框直接盖在引线上
-                # ===============================================
                 self.dyn_ref_line.hide()
                 self.dyn_arc_dim_item.hide()
                 
@@ -649,7 +710,6 @@ class CADGraphicsView(QGraphicsView):
                 
                 rect_dim_path = QPainterPath()
                 
-                # 1. 宽度辅助线及箭头 (在矩形最底部)
                 w_start = QPointF(min_x, max_y + offset)
                 w_end = QPointF(max_x, max_y + offset)
                 if abs(rect_ex - sx) > 10 / lod:
@@ -659,7 +719,6 @@ class CADGraphicsView(QGraphicsView):
                     rect_dim_path.addPath(make_arrow(w_start.x(), w_start.y(), 180, 7))
                     rect_dim_path.addPath(make_arrow(w_end.x(), w_end.y(), 0, 7))
                 
-                # 2. 高度辅助线及箭头 (在矩形最右侧)
                 h_start = QPointF(max_x + offset, min_y)
                 h_end = QPointF(max_x + offset, max_y)
                 if abs(rect_ey - sy) > 10 / lod:
@@ -672,7 +731,6 @@ class CADGraphicsView(QGraphicsView):
                 self.dyn_len_dim_item.setPath(rect_dim_path)
                 self.dyn_len_dim_item.show()
                 
-                # 3. 居中覆盖输入框：像直线一样，正在输入的一侧变蓝，另一侧变深灰
                 display_w = w_buf if w_buf else f"{abs(rect_ex - sx):.2f}"
                 display_h = h_buf if h_buf else f"{abs(rect_ey - sy):.2f}"
                 
@@ -694,9 +752,6 @@ class CADGraphicsView(QGraphicsView):
                 display_length = f"{display_w} , {display_h}"
                 
             elif is_circle_style_hud:
-                # ===============================================
-                # 圆形/多边形/椭圆 统一逻辑：从中心到边缘绘制带箭头的半径引线
-                # ===============================================
                 self.dyn_ref_line.hide()
                 self.dyn_arc_dim_item.hide()
                 self.hud_angle.hide()
@@ -707,7 +762,6 @@ class CADGraphicsView(QGraphicsView):
                     try: radius = float(tool_buffer)
                     except ValueError: pass
 
-                # 根据半径和角度锁定终点坐标
                 dx = final_point.x() - ref_point.x()
                 dy = final_point.y() - ref_point.y()
                 
@@ -724,7 +778,6 @@ class CADGraphicsView(QGraphicsView):
                 if radius > 0:
                     rad_path.moveTo(ref_point)
                     rad_path.lineTo(edge_point)
-                    # 绘制朝外的箭头
                     angle_deg = math.degrees(math.atan2(-(edge_y - ref_point.y()), edge_x - ref_point.x()))
                     rad_path.addPath(make_arrow(edge_point.x(), edge_point.y(), angle_deg, 7))
 
@@ -732,13 +785,10 @@ class CADGraphicsView(QGraphicsView):
                 self.dyn_len_dim_item.show()
 
                 display_r = tool_buffer if tool_buffer else f"{radius:.2f}"
-                
-                # 动态调整前缀：椭圆用 L(Length)，圆/多边形用 R(Radius)
                 prefix = "L:" if current_tool_name == 'EllipseTool' else "R:"
                 
                 self.hud_length.setHtml(f"<div style='background-color:#0055ff; color:white; padding:2px 4px; border:1px solid #777; font-family:Arial; font-size:12px; text-align:center;'>{prefix} {display_r}</div>")
 
-                # 如果半径太小，文字往外推，防止挤在圆心；否则文字居中于引线
                 if radius * lod < 40:
                     self.hud_length.setPos(edge_point.x() + 5/lod, edge_point.y() - 12/lod)
                 else:
@@ -750,9 +800,6 @@ class CADGraphicsView(QGraphicsView):
                 display_length = f"{prefix}={display_r}"
 
             else:
-                # ===============================================
-                # 直线/多段线原生逻辑：恢复您的蓝色居中框、扇形弧、虚线标注
-                # ===============================================
                 display_angle_value = snapped_angle
                 if ang_buffer:
                     try: display_angle_value = float(ang_buffer)
@@ -845,7 +892,6 @@ class CADGraphicsView(QGraphicsView):
                 else:
                     display_angle = f"{actual_display_angle:.0f}°"
                 
-                # 【完全恢复】：您原版的蓝色高亮和位置居中
                 bg_len = "#0055ff" if input_mode == 'length' else "#444444"
                 bg_ang = "#0055ff" if input_mode == 'angle' else "#444444"
                 
@@ -864,7 +910,6 @@ class CADGraphicsView(QGraphicsView):
                 self.hud_length.show()
                 self.hud_angle.show()
 
-            # 右下角的极轴追踪提示
             hud_bg_color = "#a0a0a0"
             if is_rect_tool:
                 hud_text = f"正交: {display_length}"
@@ -920,6 +965,19 @@ class CADGraphicsView(QGraphicsView):
             self.setFocus() 
             current_point = self.mapToScene(event.pos())
             final_point, snapped_angle = self._calculate_global_snap(current_point)
+            
+            if getattr(self, '_is_pasting', False):
+                if event.button() == Qt.MouseButton.LeftButton:
+                    dx = final_point.x() - getattr(self, '_paste_base_x', 0)
+                    dy = final_point.y() - getattr(self, '_paste_base_y', 0)
+                    cmd = CommandPasteGeom(self.scene(), self.clipboard_data, dx, dy)
+                    self.undo_stack.push(cmd)
+                    self._cleanup_paste_preview()
+                elif event.button() == Qt.MouseButton.RightButton:
+                    self._cleanup_paste_preview()
+                event.accept()
+                return
+            
             handled = False
             if self.current_tool: handled = self.current_tool.mousePressEvent(event, final_point, snapped_angle)
             if not handled: super().mousePressEvent(event)
@@ -934,6 +992,17 @@ class CADGraphicsView(QGraphicsView):
                 self._pan_start_pos = event.pos(); event.accept(); return
             self.last_cursor_point = self.mapToScene(event.pos())
             final_point, snapped_angle = self._calculate_global_snap(self.last_cursor_point)
+            
+            if getattr(self, '_is_pasting', False):
+                dx = final_point.x() - getattr(self, '_paste_base_x', 0)
+                dy = final_point.y() - getattr(self, '_paste_base_y', 0)
+                for item in getattr(self, '_paste_preview_items', []):
+                    # ======== 修改：基于初始局部坐标进行偏移 ========
+                    item.setPos(item._preview_base_pos.x() + dx, item._preview_base_pos.y() + dy)
+                    # ============================================
+                event.accept()
+                return
+            
             handled = False
             if self.current_tool: handled = self.current_tool.mouseMoveEvent(event, final_point, snapped_angle)
             if not handled: super().mouseMoveEvent(event)
@@ -953,27 +1022,112 @@ class CADGraphicsView(QGraphicsView):
 
     def keyPressEvent(self, event: QKeyEvent):
         try:
-            if event.key() == Qt.Key.Key_Tab or event.key() == Qt.Key.Key_Backtab:
-                if self.current_tool:
-                    handled = self.current_tool.keyPressEvent(event)
-                    if handled: 
-                        self._calculate_global_snap(self.last_cursor_point)
-                event.accept()
-                return
-
+            if event.key() == Qt.Key.Key_Escape:
+                if getattr(self, '_is_pasting', False):
+                    self._cleanup_paste_preview()
+                    event.accept()
+                    return
+            
             if event.matches(QKeySequence.StandardKey.Copy):
                 selected = self.scene().selectedItems()
                 self.clipboard_data.clear()
+                
+                if not selected:
+                    return
+
+                # ==== 核心修复：计算选中图形的真实包围盒中心作为基准点 ====
+                min_x, min_y = float('inf'), float('inf')
+                max_x, max_y = float('-inf'), float('-inf')
+
                 for item in selected:
                     if getattr(item, 'is_smart_shape', False):
-                        self.clipboard_data.append({'type': type(item), 'coords': list(item.coords)})
+                        # 获取包含所有子图形在内的真实边界
+                        rect = item.sceneBoundingRect()
+                        if rect.left() < min_x: min_x = rect.left()
+                        if rect.right() > max_x: max_x = rect.right()
+                        if rect.top() < min_y: min_y = rect.top()
+                        if rect.bottom() > max_y: max_y = rect.bottom()
+
+                if min_x != float('inf'):
+                    # 完美居中：让粘贴时的鼠标永远捏在图形的正中心！
+                    self._copy_base_point = QPointF((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+                else:
+                    self._copy_base_point = QPointF(self.last_cursor_point)
+                # ========================================================
+                
+                for item in selected:
+                    if getattr(item, 'is_smart_shape', False):
+                        
+                        # ================= 专属提取块的数据 =================
+                        if getattr(item, 'is_block', False):
+                            self.clipboard_data.append({
+                                'type': 'block',
+                                'block_name': item.block_name,
+                                'pos': (item.x(), item.y()),
+                                'coords': [(item.x(), item.y())] 
+                            })
+                            continue
+                        # ==========================================================
+                        
+                        data = {'type': type(item), 'coords': list(item.coords)}
+                        
+                        if hasattr(item, 'toPlainText'): data['text'] = item.toPlainText()
+                        elif hasattr(item, 'text_item'): data['text'] = item.text_item.toPlainText()
+                        if hasattr(item, 'radius'): data['radius'] = item.radius
+                        if hasattr(item, 'start_angle'): data['start_angle'] = item.start_angle
+                        if hasattr(item, 'end_angle'): data['end_angle'] = item.end_angle
+                        if hasattr(item, 'rx'): data['rx'] = item.rx
+                        if hasattr(item, 'ry'): data['ry'] = item.ry
+                        if hasattr(item, 'rotation_angle'): data['rotation_angle'] = item.rotation_angle
+                        if hasattr(item, 'segments'): data['segments'] = item.segments
+                        if hasattr(item, 'prefix'): data['prefix'] = item.prefix
+                        
+                        self.clipboard_data.append(data)
                 return
+
             elif event.matches(QKeySequence.StandardKey.Paste):
                 if self.clipboard_data:
-                    cmd = CommandPasteGeom(self.scene(), self.clipboard_data); self.undo_stack.push(cmd)
+                    if hasattr(self, '_copy_base_point') and self._copy_base_point:
+                        self._paste_base_x = self._copy_base_point.x()
+                        self._paste_base_y = self._copy_base_point.y()
+                    else:
+                        # 兜底防错
+                        self._paste_base_x = self.clipboard_data[0]['coords'][0][0]
+                        self._paste_base_y = self.clipboard_data[0]['coords'][0][1]
+                    
+                    self._cleanup_paste_preview()
+                    self._is_pasting = True
+                    self._paste_preview_items = []
+                    
+                    for d in self.clipboard_data:
+                        item = create_item_from_clipboard(d, 0, 0) 
+                        
+                        if hasattr(item, 'setPen'):
+                            pen = QPen(QColor(255, 255, 255, 150), 1, Qt.PenStyle.DashLine)
+                            pen.setCosmetic(True)
+                            item.setPen(pen)
+                        
+                        item.setOpacity(0.6)
+                        item.is_smart_shape = False 
+                        
+                        # ======== 新增：记录它被创建时的初始局部坐标 ========
+                        item._preview_base_pos = item.pos()  
+                        # =================================================
+                        
+                        self.scene().addItem(item)
+                        self._paste_preview_items.append(item)
+                        
+                    dx = self.last_cursor_point.x() - getattr(self, '_paste_base_x', 0)
+                    dy = self.last_cursor_point.y() - getattr(self, '_paste_base_y', 0)
+                    for item in self._paste_preview_items:
+                        # ======== 修改：基于初始局部坐标进行偏移，防止覆盖块本身的坐标 ========
+                        item.setPos(item._preview_base_pos.x() + dx, item._preview_base_pos.y() + dy)
+                        # ====================================================================
                 return
+                
             elif event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_R:
                 self.switch_tool("旋转"); return
+                
             if event.matches(QKeySequence.StandardKey.Undo):
                 self.undo_stack.undo(); self.scene().clearSelection(); self._calculate_global_snap(self.last_cursor_point); return
             elif event.matches(QKeySequence.StandardKey.Redo):
@@ -983,7 +1137,8 @@ class CADGraphicsView(QGraphicsView):
                     if item.flags() & QGraphicsItem.GraphicsItemFlag.ItemIsSelectable: item.setSelected(True)
                 return
             elif event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-                if self.current_tool and not self.current_tool.get_reference_point():
+                is_interacting = getattr(self.current_tool, 'state', 0) > 0
+                if self.current_tool and not self.current_tool.get_reference_point() and not is_interacting:
                     selected = self.scene().selectedItems()
                     if selected:
                         for item in selected:

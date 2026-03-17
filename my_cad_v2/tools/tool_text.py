@@ -34,6 +34,8 @@ class TextTool(BaseTool):
     def deactivate(self):
         if hasattr(self.canvas, '_cleanup_tracking_huds'):
             self.canvas._cleanup_tracking_huds()
+        if self.canvas.scene():
+            self.canvas.scene().clearFocus()
 
     def mousePressEvent(self, event, final_point, snapped_angle):
         if event.button() == Qt.MouseButton.LeftButton:

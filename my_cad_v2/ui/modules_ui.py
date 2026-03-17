@@ -125,7 +125,7 @@ def generate_cad_style_icon(tool_type, has_submenu=False):
         painter.drawPath(path)
         painter.drawEllipse(3, 23, 2, 2)
         painter.drawEllipse(27, 7, 2, 2)
-    elif tool_type == "标注":
+    elif tool_type in ("标注", "线性标注"):
         pen_solid = QPen(QColor(255, 255, 255), 1); painter.setPen(pen_solid)
         painter.drawLine(6, 6, 6, 26); painter.drawLine(26, 6, 26, 26); painter.drawLine(6, 16, 26, 16)
         painter.drawLine(6, 16, 9, 13); painter.drawLine(6, 16, 9, 19)
@@ -156,6 +156,53 @@ def generate_cad_style_icon(tool_type, has_submenu=False):
         font = painter.font(); font.setPointSize(8); painter.setFont(font)
         painter.drawText(12, 14, "⌒")
 
+    elif tool_type == "缩放":
+        painter.drawRect(6, 16, 10, 10)
+        pen_dash = QPen(QColor(255, 255, 255, 150), 1, Qt.PenStyle.DashLine)
+        painter.setPen(pen_dash)
+        painter.drawRect(6, 6, 20, 20)
+        painter.drawLine(16, 16, 26, 6)
+        
+    elif tool_type == "阵列":
+        for x in [6, 14, 22]:
+            for y in [6, 14, 22]:
+                painter.drawRect(x, y, 4, 4)
+
+    elif tool_type == "打散":
+        painter.drawLine(6, 6, 12, 6); painter.drawLine(6, 6, 6, 12)
+        painter.drawLine(26, 6, 20, 6); painter.drawLine(26, 6, 26, 12)
+        painter.drawLine(6, 26, 12, 26); painter.drawLine(6, 26, 6, 20)
+        painter.drawLine(26, 26, 20, 26); painter.drawLine(26, 26, 26, 20)
+        painter.drawPoint(16, 16)
+        
+    elif tool_type == "合并":
+        painter.drawLine(6, 16, 12, 16); painter.drawLine(20, 16, 26, 16)
+        pen_blue = QPen(QColor(0, 120, 215), 2)
+        painter.setPen(pen_blue)
+        painter.drawLine(12, 16, 20, 16)
+        
+    elif tool_type == "倒直角":
+        painter.drawLine(6, 26, 6, 14); painter.drawLine(26, 6, 14, 6)
+        pen_cyan = QPen(QColor(0, 255, 255), 1.5)
+        painter.setPen(pen_cyan)
+        painter.drawLine(6, 14, 14, 6)
+        
+    elif tool_type == "倒圆角":
+        painter.drawLine(6, 26, 6, 14); painter.drawLine(26, 6, 14, 6)
+        pen_cyan = QPen(QColor(0, 255, 255), 1.5)
+        painter.setPen(pen_cyan)
+        painter.drawArc(6, 6, 16, 16, 90 * 16, 90 * 16)
+    elif tool_type == "复制":  # <--- 新增这段复制图标的绘制
+        painter.setPen(QPen(Qt.GlobalColor.white, 1.5))
+        painter.drawRect(6, 6, 12, 12)
+        painter.setPen(QPen(QColor(0, 255, 255), 1.5, Qt.PenStyle.DashLine))
+        painter.drawRect(14, 14, 12, 12)
+    elif tool_type == "比例缩放":   # <--- 把 "缩放" 改成 "比例缩放"
+        painter.drawRect(6, 16, 10, 10)
+        pen_dash = QPen(QColor(255, 255, 255, 150), 1, Qt.PenStyle.DashLine)
+        painter.setPen(pen_dash)
+        painter.drawRect(6, 6, 20, 20)
+        painter.drawLine(16, 16, 26, 6)
     
     if has_submenu:
         painter.setBrush(QColor(255, 255, 255))
@@ -163,6 +210,14 @@ def generate_cad_style_icon(tool_type, has_submenu=False):
         triangle = QPolygonF([QPointF(24, 28), QPointF(28, 28), QPointF(28, 24)])
         painter.drawPolygon(triangle)
         
+    elif tool_type == "建块":
+        # 画两个小方块，外面加一个虚线框，表示将它们“打包”成一个整体
+        painter.drawRect(8, 8, 8, 8)
+        painter.drawRect(18, 16, 8, 8)
+        
+        pen_dash = QPen(QColor(255, 255, 255, 180), 1, Qt.PenStyle.DashLine)
+        painter.setPen(pen_dash)
+        painter.drawRect(4, 4, 26, 26)
     painter.end()
     return QIcon(pixmap)
 
@@ -172,8 +227,13 @@ def create_menu_bar(main_window):
     QMenuBar { background-color: #222222; border-bottom: 1px solid #111111; padding-left: 5px; }
     QMenuBar::item { background-color: transparent; padding: 5px 10px; color: #BBBBBB; }
     QMenuBar::item:selected { background-color: #555555; color: #FFFFFF; }
-    QToolBar { background-color: #2b2b2b; border-right: 1px solid #111111; padding: 1px; spacing: 1px; }
-    QToolButton { background-color: transparent; padding: 4px; border: 1px solid transparent; border-radius: 3px; }
+    
+    /* === 修改：将 padding 和 spacing 设为 0 === */
+    QToolBar { background-color: #2b2b2b; border-right: 1px solid #111111; padding: 0px; spacing: 0px; }
+    
+    /* === 修改：将 padding 从 4px 缩小为 2px === */
+    QToolButton { background-color: transparent; padding: 2px; border: 1px solid transparent; border-radius: 3px; }
+    
     QToolButton:hover { background-color: #444444; }
     QToolButton:checked { background-color: #1a1a1a; border: 1px solid #000000; } 
     QToolButton::menu-button { border: none; width: 0px; }
@@ -189,16 +249,16 @@ def create_menu_bar(main_window):
     QListWidget::item:selected { background-color: #4a4a4a; } 
     """
     main_window.setStyleSheet(dark_night_theme)
-
 def create_left_toolbox(main_window):
     toolbox = QToolBar("绘图工具")
     main_window.addToolBar(Qt.ToolBarArea.LeftToolBarArea, toolbox)
     toolbox.setMovable(False)
-    toolbox.setIconSize(QSize(32, 32))
+    
+    # 🌟 修改：将整体图标尺寸从 32x32 缩小为 24x24
+    toolbox.setIconSize(QSize(24, 24))
+    
     # 完全禁用工具栏的右键菜单
     toolbox.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
-    
-    # 重写工具栏的 contextMenuEvent 来确保不显示任何菜单
     def toolbar_context_menu(event):
         event.ignore()
     toolbox.contextMenuEvent = toolbar_context_menu
@@ -206,6 +266,7 @@ def create_left_toolbox(main_window):
     ag = QActionGroup(main_window)
     ag.setExclusive(True)
 
+    # 🌟 修改：重新组织工具列表，将 5 个标注合并为二级菜单
     tool_definitions = [
         ("选择", "选择", False, []),
         ("直线", "直线", False, []),
@@ -221,77 +282,92 @@ def create_left_toolbox(main_window):
             ("起点-终点-半径", "radius")
         ]),
         ("偏移", "偏移", False, []),
+        ("复制", "复制", False, []),
         ("旋转", "旋转", False, []),
         ("镜像", "镜像", False, []),
         ("修剪", "修剪", False, []),
         ("延伸", "延伸", False, []),
         ("打断", "打断", False, []),
         ("文字", "文字", False, []),
-        ("智能标注", "智能标注", False, []), 
-        ("角度标注", "角度标注", False, []),
-        ("弧长标注", "弧长标注", False, []),
-        ("多重引线", "多重引线", False, []),
-        ("标注", "标注", False, [])
+
+        # --- 新增的 6 个高级编辑工具 ---
+        ("比例缩放", "比例缩放", False, []),
+        ("阵列", "阵列", False, []),
+        
+        ("倒直角", "倒直角", False, []),
+        ("倒圆角", "倒圆角", False, []),
+        ("打散", "打散", False, []),
+        ("合并", "合并", False, []),
+        ("建块", "建块", False, []),
+        # --- 合并的标注组 ---
+        ("智能标注", "标注组", True, [
+            ("智能标注", "智能标注"),
+            ("角度标注", "角度标注"),
+            ("弧长标注", "弧长标注"),
+            ("多重引线", "多重引线"),
+            ("线性标注", "标注")
+        ])
     ]
-    main_window.current_arc_tool = "三点圆弧"
-    main_window.arc_action = None
 
     for display_name, tool_name, has_submenu, subtools in tool_definitions:
         if has_submenu:
             icon = generate_cad_style_icon(display_name, has_submenu=True)
             action = QAction(icon, display_name, main_window)
             action.setCheckable(True)
-            if tool_name == "直线": 
-                action.setChecked(True)
-
-         
-            
             ag.addAction(action)
-            main_window.arc_action = action
 
-           
+            # 动态记录当前激活的子工具状态
+            setattr(main_window, f"current_{tool_name}_tool", display_name)
+            setattr(main_window, f"{tool_name}_action", action)
             
-            def make_arc_click_handler():
+            # 主按钮直接点击时，应用当前记录的子工具
+            def make_main_click_handler(tn=tool_name, subs=subtools):
                 def handler():
-                    current_arc = main_window.current_arc_tool
-                    main_window.view_2d.switch_tool("圆弧")
-                    if current_arc == "三点圆弧":
-                        main_window.view_2d.current_tool.set_mode("3point")
-                    elif current_arc == "起点-圆心-终点":
-                        main_window.view_2d.current_tool.set_mode("center")
-                    elif current_arc == "起点-终点-半径":
-                        main_window.view_2d.current_tool.set_mode("radius")
+                    current_sub = getattr(main_window, f"current_{tn}_tool")
+                    if tn == "圆弧":
+                        main_window.view_2d.switch_tool("圆弧")
+                        for sd, sv in subs:
+                            if sd == current_sub:
+                                main_window.view_2d.current_tool.set_mode(sv)
+                                break
+                    else:  # 标注组
+                        for sd, sv in subs:
+                            if sd == current_sub:
+                                main_window.view_2d.switch_tool(sv)
+                                break
                 return handler
             
-            action.triggered.connect(make_arc_click_handler())
+            action.triggered.connect(make_main_click_handler())
             
-            arc_menu = QMenu(main_window)
+            menu = QMenu(main_window)
             
-            for subtool_name, mode in subtools:
-                def make_submenu_handler(st_name, m):
+            for subtool_name, mode_or_tool in subtools:
+                def make_submenu_handler(st_name, m, tn=tool_name, act=action):
                     def handler():
-                        main_window.view_2d.switch_tool("圆弧")
-                        main_window.view_2d.current_tool.set_mode(m)
-                        main_window.current_arc_tool = st_name
+                        if tn == "圆弧":
+                            main_window.view_2d.switch_tool("圆弧")
+                            main_window.view_2d.current_tool.set_mode(m)
+                        else:  # 标注组
+                            main_window.view_2d.switch_tool(m)
+                            
+                        setattr(main_window, f"current_{tn}_tool", st_name)
                         new_icon = generate_cad_style_icon(st_name, has_submenu=True)
-                        main_window.arc_action.setIcon(new_icon)
-                        main_window.arc_action.setText(st_name)
-                        main_window.arc_action.setChecked(True)
+                        act.setIcon(new_icon)
+                        act.setText(st_name)
+                        act.setChecked(True)
                     return handler
                 
                 submenu_action = QAction(subtool_name, main_window)
-                submenu_action.triggered.connect(make_submenu_handler(subtool_name, mode))
-                arc_menu.addAction(submenu_action)
+                submenu_action.triggered.connect(make_submenu_handler(subtool_name, mode_or_tool))
+                menu.addAction(submenu_action)
             
             toolbox.addAction(action)
             tool_button = toolbox.widgetForAction(action)
             if isinstance(tool_button, QToolButton):
-                # 使用 InstantPopup 模式：左键点击立即弹出菜单
                 tool_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-                tool_button.setMenu(arc_menu)
+                tool_button.setMenu(menu)
                 
-                # 为菜单添加样式，实现悬停高亮效果
-                arc_menu.setStyleSheet("""
+                menu.setStyleSheet("""
                     QMenu {
                         background-color: #2b2b2b;
                         color: #FFFFFF;
@@ -325,7 +401,6 @@ def create_left_toolbox(main_window):
         
     main_window.tool_actions = ag 
     return toolbox
-
 def create_status_bar(main_window):
     lbl_transform_info = QLabel(" 坐标提示区 ")
     main_window.statusBar().addPermanentWidget(lbl_transform_info)

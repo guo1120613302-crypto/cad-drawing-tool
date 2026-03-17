@@ -1,33 +1,56 @@
 # tools/tool_select.py
 from tools.base_tool import BaseTool
-from core.core_items import SmartLineItem, SmartPolygonItem, SmartDimensionItem, SmartCircleItem, SmartPolylineItem, SmartArcItem
-from PyQt6.QtWidgets import QGraphicsRectItem, QGraphicsItem, QGraphicsLineItem, QGraphicsPolygonItem, QGraphicsPathItem, QGraphicsEllipseItem
+from core.core_items import (SmartLineItem, SmartPolygonItem, SmartDimensionItem, 
+                             SmartCircleItem, SmartPolylineItem, SmartArcItem,
+                             SmartEllipseItem, SmartSplineItem, SmartTextItem, 
+                             SmartLeaderItem, SmartOrthogonalDimensionItem, 
+                             SmartRadiusDimensionItem, SmartAngleDimensionItem, SmartArcLengthDimensionItem)
+from PyQt6.QtWidgets import QGraphicsRectItem, QGraphicsItem
 from PyQt6.QtCore import Qt, QPointF, QLineF, QRectF
-from PyQt6.QtGui import QPen, QColor, QBrush, QUndoCommand, QPolygonF, QPainterPath
+from PyQt6.QtGui import QPen, QColor, QBrush, QUndoCommand
 import math
 from utils.geom_engine import GeometryEngine
+
+def apply_geom_data(item, data):
+    """【万能刷新引擎】直接应用底层数据，触发图形实时重绘"""
+    if isinstance(data, dict):
+        for k, v in data.items():
+            if k not in ('coords', 'pos'): setattr(item, k, v)
+        if 'coords' in data: 
+            item.set_coords(data['coords'])
+        else:
+            item.prepareGeometryChange()
+            item.update()
+    else:
+        item.set_coords(data)
 
 class CommandModifyMultipleGeom(QUndoCommand):
     def __init__(self, stretch_data):
         super().__init__()
         self.stretch_data = stretch_data 
     def redo(self):
-        for item, _, new_coords in self.stretch_data:
-            if item.scene(): item.set_coords(new_coords)
+        for item, _, new_data in self.stretch_data:
+            if item.scene(): apply_geom_data(item, new_data)
     def undo(self):
-        for item, old_coords, _ in self.stretch_data:
-            if item.scene(): item.set_coords(old_coords)
+        for item, old_data, _ in self.stretch_data:
+            if item.scene(): apply_geom_data(item, old_data)
 
 class CommandMoveGeom(QUndoCommand):
     def __init__(self, move_data):
         super().__init__()
         self.move_data = move_data
     def redo(self):
-        for item, _, new_c in self.move_data:
-            if item.scene(): item.set_coords(new_c)
+        for item, _, new_data in self.move_data:
+            if item.scene(): 
+                apply_geom_data(item, new_data)
+                if getattr(item, 'geom_type', '') == 'text' and 'pos' in new_data:
+                    item.setPos(new_data['pos'])
     def undo(self):
-        for item, old_c, _ in self.move_data:
-            if item.scene(): item.set_coords(old_c)
+        for item, old_data, _ in self.move_data:
+            if item.scene(): 
+                apply_geom_data(item, old_data)
+                if getattr(item, 'geom_type', '') == 'text' and 'pos' in old_data:
+                    item.setPos(old_data['pos'])
 
 class SelectTool(BaseTool):
     def __init__(self, canvas):
@@ -40,19 +63,11 @@ class SelectTool(BaseTool):
         self.is_moving = False
         self.move_items = []
         self.move_start_pos = None
-        self.ghost_items = [] 
-        self.original_affected_items = []
         self.input_buffer = ""
 
     def _cleanup_temp_items(self):
-        for ghost_dict in self.ghost_items:
-            ghost_item = ghost_dict['ghost']
-            if ghost_item.scene(): ghost_item.scene().removeItem(ghost_item)
-        self.ghost_items.clear()
-        for item in self.original_affected_items:
-            item.show()
-            item.hot_grip_index = -1
-        self.original_affected_items = []
+        for data in getattr(self, 'stretch_items', []):
+            if 'item' in data: data['item'].hot_grip_index = -1
         self.is_stretching = False; self.stretch_items = []; self.stretch_start_pos = None
         self.is_moving = False; self.move_items = []; self.move_start_pos = None
         self.input_buffer = ""
@@ -73,6 +88,105 @@ class SelectTool(BaseTool):
 
     def get_input_buffer(self): return self.input_buffer
 
+    def _capture_old_data(self, item):
+        """完整捕获对象的所有几何属性，用于实时预览的回退和撤销"""
+        data = {'coords': list(item.coords)}
+        if hasattr(item, 'center'): data['center'] = item.center
+        if hasattr(item, 'radius'): data['radius'] = item.radius
+        if hasattr(item, 'rx'): data['rx'] = item.rx
+        if hasattr(item, 'ry'): data['ry'] = item.ry
+        if hasattr(item, 'start_angle'): data['start_angle'] = item.start_angle
+        if hasattr(item, 'end_angle'): data['end_angle'] = item.end_angle
+        if hasattr(item, 'rotation_angle'): data['rotation_angle'] = item.rotation_angle
+        if hasattr(item, 'pos'): data['pos'] = item.pos()
+        return data
+
+    def _calculate_moved_data(self, old_data, g_type, dx, dy):
+        """计算整体平移后的新数据"""
+        new_data = dict(old_data)
+        old_c = old_data.get('coords', [])
+        new_data['coords'] = [(x + dx, y + dy) for x, y in old_c]
+        
+        if 'center' in old_data:
+            c = old_data['center']
+            new_data['center'] = (c[0] + dx, c[1] + dy)
+        if 'pos' in old_data and g_type == 'text':
+            p = old_data['pos']
+            new_data['pos'] = QPointF(p.x() + dx, p.y() + dy)
+            
+        return new_data
+
+    def _calculate_stretched_data(self, data, dx, dy):
+        """计算夹点被拉伸后的新数据"""
+        idx = data['index']
+        g_type = data['type']
+        old_data = data['old_data']
+        old_coords = old_data['coords']
+        gx, gy = data['grip_pos']
+        
+        new_data = dict(old_data)
+        new_coords = list(old_coords)
+        
+        if g_type == 'line':
+            if idx == 0: new_coords[0] = (old_coords[0][0]+dx, old_coords[0][1]+dy)
+            elif idx == 2: new_coords[1] = (old_coords[1][0]+dx, old_coords[1][1]+dy)
+            elif idx == 1: 
+                new_coords[0] = (old_coords[0][0]+dx, old_coords[0][1]+dy)
+                new_coords[1] = (old_coords[1][0]+dx, old_coords[1][1]+dy)
+                
+        elif g_type in ('poly', 'polyline', 'spline'):
+            count = len(old_coords)
+            if idx < count: new_coords[idx] = (old_coords[idx][0]+dx, old_coords[idx][1]+dy)
+            else:
+                edge_idx = idx - count
+                p1_idx, p2_idx = edge_idx, (edge_idx + 1) % count
+                new_coords[p1_idx] = (old_coords[p1_idx][0]+dx, old_coords[p1_idx][1]+dy)
+                new_coords[p2_idx] = (old_coords[p2_idx][0]+dx, old_coords[p2_idx][1]+dy)
+                
+        elif g_type in ('dim', 'ortho_dim', 'rad_dim', 'angle_dim', 'arclen_dim', 'leader'):
+            if idx < len(new_coords):
+                new_coords[idx] = (old_coords[idx][0]+dx, old_coords[idx][1]+dy)
+                
+        elif g_type == 'circle':
+            if idx == 0: 
+                c = (old_coords[0][0]+dx, old_coords[0][1]+dy)
+                new_data['center'] = c
+                new_coords = [c, (c[0]+old_data['radius'], c[1])]
+            else: 
+                c = old_data['center']
+                r = math.hypot(gx+dx - c[0], gy+dy - c[1])
+                new_data['radius'] = r
+                new_coords = [c, (c[0]+r, c[1])]
+                
+        elif g_type == 'ellipse':
+            c = old_data['center']
+            if idx == 0:
+                c = (c[0]+dx, c[1]+dy)
+                new_data['center'] = c
+            elif idx in (1, 2):
+                new_data['rx'] = math.hypot(gx+dx - c[0], gy+dy - c[1])
+            elif idx in (3, 4):
+                new_data['ry'] = math.hypot(gx+dx - c[0], gy+dy - c[1])
+                
+        elif g_type == 'arc':
+            if idx == 3: 
+                c = (old_coords[0][0]+dx, old_coords[0][1]+dy)
+                new_data['center'] = c
+                new_coords = [c, (c[0]+old_data['radius'], c[1])]
+            else:
+                c = old_data['center']
+                r = math.hypot(gx+dx - c[0], gy+dy - c[1])
+                new_data['radius'] = r
+                new_coords = [c, (c[0]+r, c[1])]
+                
+        elif g_type == 'text':
+            if 'pos' in old_data:
+                p = old_data['pos']
+                new_data['pos'] = QPointF(p.x() + dx, p.y() + dy)
+                
+        new_data['coords'] = new_coords
+        return new_data
+
     def mousePressEvent(self, event, final_point, snapped_angle):
         if event.button() == Qt.MouseButton.MiddleButton: return False
         if event.button() == Qt.MouseButton.LeftButton:
@@ -82,7 +196,9 @@ class SelectTool(BaseTool):
             self.input_buffer = "" 
             raw_point = self.canvas.mapToScene(event.pos())
             selected_items = self.canvas.scene().selectedItems()
+            
             if selected_items:
+                # 1. 检测夹点拉伸
                 hit_radius = 15.0 / self.canvas.transform().m11()
                 found_grips = []
                 for item in selected_items:
@@ -91,7 +207,8 @@ class SelectTool(BaseTool):
                             if math.hypot(raw_point.x() - gx, raw_point.y() - gy) < hit_radius:
                                 found_grips.append({
                                     'item': item, 'index': i, 'type': getattr(item, 'geom_type', 'unknown'),
-                                    'old_coords': list(item.coords), 'grip_pos': (gx, gy)
+                                    'old_data': self._capture_old_data(item),
+                                    'grip_pos': (gx, gy)
                                 })
                                 item.hot_grip_index = i 
 
@@ -99,72 +216,31 @@ class SelectTool(BaseTool):
                     self.is_stretching = True
                     self.stretch_items = found_grips
                     self.stretch_start_pos = QPointF(*found_grips[0]['grip_pos'])
-                    pen = QPen(QColor(255, 0, 0, 150), 1); pen.setCosmetic(True)
-                    brush = QBrush(QColor(255, 0, 0, 50))
-                    self.original_affected_items = []
-                    self.ghost_items = []
-                    
-                    for item_data in self.stretch_items:
-                        item = item_data['item']
-                        if item not in self.original_affected_items:
-                            item.hide(); self.original_affected_items.append(item)
-                        g_type = item_data['type']
-                        if g_type == 'line': ghost = QGraphicsLineItem(item.line())
-                        elif g_type == 'poly': ghost = QGraphicsPolygonItem(item.polygon()); ghost.setBrush(brush)
-                        elif g_type == 'dim': ghost = QGraphicsPathItem(item.get_lines_path())
-                        elif g_type == 'circle':
-                            r = item.radius; ghost = QGraphicsEllipseItem(item.center[0]-r, item.center[1]-r, 2*r, 2*r)
-                        elif g_type == 'polyline':
-                            path = QPainterPath(); path.moveTo(QPointF(*item.coords[0]))
-                            for x, y in item.coords[1:]: path.lineTo(QPointF(x, y))
-                            ghost = QGraphicsPathItem(path)
-                        elif g_type == 'arc':
-                            r = item.radius; span = item.end_angle - item.start_angle
-                            if span <= 0: span += 360
-                            path = QPainterPath()
-                            path.arcMoveTo(QRectF(item.center[0]-r, item.center[1]-r, 2*r, 2*r), item.start_angle)
-                            path.arcTo(QRectF(item.center[0]-r, item.center[1]-r, 2*r, 2*r), item.start_angle, span)
-                            ghost = QGraphicsPathItem(path)
-                            
-                        ghost.setPen(pen); ghost.setZValue(10000)
-                        self.canvas.scene().addItem(ghost)
-                        self.ghost_items.append({'ghost': ghost, 'data': item_data})
                     return True
                 
-                clicked_item = self.canvas.scene().itemAt(raw_point, self.canvas.transform())
-                if getattr(clicked_item, 'is_smart_shape', False) and clicked_item.isSelected():
+                # 2. 检测整体平移 (含大容差，解决圆/椭圆难点中的问题)
+                clicked_item = None
+                hit_radius_move = 10.0 / self.canvas.transform().m11()
+                hit_rect = QRectF(raw_point.x() - hit_radius_move, raw_point.y() - hit_radius_move, hit_radius_move * 2, hit_radius_move * 2)
+                
+                for item in self.canvas.scene().items(hit_rect):
+                    if getattr(item, 'is_smart_shape', False) and item.isSelected():
+                        clicked_item = item
+                        break
+
+                if clicked_item:
                     self.is_moving = True
-                    self.move_items = [item for item in selected_items if getattr(item, 'is_smart_shape', False)]
+                    self.move_items = []
+                    for item in selected_items:
+                        if getattr(item, 'is_smart_shape', False):
+                            self.move_items.append({
+                                'item': item, 'type': getattr(item, 'geom_type', 'unknown'),
+                                'old_data': self._capture_old_data(item)
+                            })
                     self.move_start_pos = final_point
-                    
-                    pen = QPen(QColor(0, 255, 255, 150), 1, Qt.PenStyle.DashLine); pen.setCosmetic(True)
-                    self.ghost_items = []; self.original_affected_items = []
-                    
-                    for item in self.move_items:
-                        item.hide(); self.original_affected_items.append(item)
-                        g_type = getattr(item, 'geom_type', 'unknown')
-                        if g_type == 'line': ghost = QGraphicsLineItem(item.line())
-                        elif g_type == 'poly': ghost = QGraphicsPolygonItem(item.polygon())
-                        elif g_type == 'dim': ghost = QGraphicsPathItem(item.get_lines_path())
-                        elif g_type == 'circle':
-                            r = item.radius; ghost = QGraphicsEllipseItem(item.center[0]-r, item.center[1]-r, 2*r, 2*r)
-                        elif g_type == 'polyline':
-                            path = QPainterPath(); path.moveTo(QPointF(*item.coords[0]))
-                            for x, y in item.coords[1:]: path.lineTo(QPointF(x, y))
-                            ghost = QGraphicsPathItem(path)
-                        elif g_type == 'arc':
-                            r = item.radius; span = item.end_angle - item.start_angle
-                            if span <= 0: span += 360
-                            path = QPainterPath()
-                            path.arcMoveTo(QRectF(item.center[0]-r, item.center[1]-r, 2*r, 2*r), item.start_angle)
-                            path.arcTo(QRectF(item.center[0]-r, item.center[1]-r, 2*r, 2*r), item.start_angle, span)
-                            ghost = QGraphicsPathItem(path)
-                            
-                        ghost.setPen(pen); ghost.setZValue(10000)
-                        self.canvas.scene().addItem(ghost)
-                        self.ghost_items.append({'ghost': ghost, 'item': item, 'type': g_type})
                     return True
             
+            # 3. 空白处框选
             self.start_point = raw_point
             if not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
                 self.canvas.scene().clearSelection()
@@ -177,7 +253,14 @@ class SelectTool(BaseTool):
             return True
             
         elif event.button() == Qt.MouseButton.RightButton:
+            # 鼠标右键：取消拖动并瞬间还原所有图形
             if self.is_stretching or self.is_moving:
+                if self.is_stretching:
+                    for data in self.stretch_items: apply_geom_data(data['item'], data['old_data'])
+                if self.is_moving:
+                    for data in self.move_items: 
+                        apply_geom_data(data['item'], data['old_data'])
+                        if data['type'] == 'text': data['item'].setPos(data['old_data']['pos'])
                 self._cleanup_temp_items()
                 if hasattr(self.canvas, '_cleanup_tracking_huds'): self.canvas._cleanup_tracking_huds()
             elif self.canvas.scene().selectedItems():
@@ -186,39 +269,29 @@ class SelectTool(BaseTool):
         return False
 
     def mouseMoveEvent(self, event, final_point, snapped_angle):
+        # === 核心魔法：抛弃幽灵线，直接让真实图形在拖拽时实时变幻！ ===
         if self.is_moving and self.move_items:
-            dx = final_point.x() - self.move_start_pos.x(); dy = final_point.y() - self.move_start_pos.y()
-            for ghost_dict in self.ghost_items:
-                ghost, item, g_type = ghost_dict['ghost'], ghost_dict['item'], ghost_dict['type']
-                old_c = item.coords
-                if g_type == 'line':
-                    ghost.setLine(QLineF(old_c[0][0]+dx, old_c[0][1]+dy, old_c[1][0]+dx, old_c[1][1]+dy))
-                elif g_type == 'poly':
-                    poly_f = QPolygonF()
-                    for x, y in old_c: poly_f.append(QPointF(x + dx, y + dy))
-                    ghost.setPolygon(poly_f)
-                elif g_type == 'dim':
-                    new_c = [(x + dx, y + dy) for x, y in old_c]
-                    ghost.setPath(item.get_lines_path(new_c))
-                elif g_type == 'circle':
-                    c, e = old_c[0], old_c[1]
-                    r = math.hypot(e[0]-c[0], e[1]-c[1])
-                    ghost.setRect(QRectF(c[0]+dx-r, c[1]+dy-r, 2*r, 2*r))
-                elif g_type == 'polyline':
-                    path = QPainterPath(); path.moveTo(QPointF(old_c[0][0]+dx, old_c[0][1]+dy))
-                    for x, y in old_c[1:]: path.lineTo(QPointF(x+dx, y+dy))
-                    ghost.setPath(path)
-                elif g_type == 'arc':
-                    c = old_c[0]; nx, ny = c[0]+dx, c[1]+dy
-                    r = item.radius; span = item.end_angle - item.start_angle
-                    if span <= 0: span += 360
-                    path = QPainterPath()
-                    path.arcMoveTo(QRectF(nx-r, ny-r, 2*r, 2*r), item.start_angle)
-                    path.arcTo(QRectF(nx-r, ny-r, 2*r, 2*r), item.start_angle, span)
-                    ghost.setPath(path)
+            dx = final_point.x() - self.move_start_pos.x()
+            dy = final_point.y() - self.move_start_pos.y()
+            for data in self.move_items:
+                item = data['item']
+                new_data = self._calculate_moved_data(data['old_data'], data['type'], dx, dy)
+                apply_geom_data(item, new_data)
+                if data['type'] == 'text' and 'pos' in new_data: item.setPos(new_data['pos'])
             self.canvas.viewport().update()
             return True
 
+        if self.is_stretching and self.stretch_items:
+            dx = final_point.x() - self.stretch_start_pos.x()
+            dy = final_point.y() - self.stretch_start_pos.y()
+            for data in self.stretch_items:
+                item = data['item']
+                new_data = self._calculate_stretched_data(data, dx, dy)
+                apply_geom_data(item, new_data)
+            self.canvas.viewport().update()
+            return True
+
+        # 框选
         if self.start_point and self.selection_box:
             raw_point = self.canvas.mapToScene(event.pos())
             x, y = min(self.start_point.x(), raw_point.x()), min(self.start_point.y(), raw_point.y())
@@ -272,6 +345,12 @@ class SelectTool(BaseTool):
                     elif self.is_moving: self._finalize_move(getattr(self.canvas, 'last_cursor_point', QPointF(0,0)))
                 return True
             elif event.key() == Qt.Key.Key_Escape:
+                if self.is_stretching:
+                    for data in self.stretch_items: apply_geom_data(data['item'], data['old_data'])
+                if self.is_moving:
+                    for data in self.move_items: 
+                        apply_geom_data(data['item'], data['old_data'])
+                        if data['type'] == 'text': data['item'].setPos(data['old_data']['pos'])
                 self._cleanup_temp_items()
                 if hasattr(self.canvas, '_cleanup_tracking_huds'): self.canvas._cleanup_tracking_huds()
                 return True
@@ -279,58 +358,55 @@ class SelectTool(BaseTool):
 
     def _finalize_stretch(self, final_point=None):
         if not self.stretch_items or not final_point: return
-        dx = final_point.x() - self.stretch_start_pos.x(); dy = final_point.y() - self.stretch_start_pos.y()
-        stretch_data = []
+        dx = final_point.x() - self.stretch_start_pos.x()
+        dy = final_point.y() - self.stretch_start_pos.y()
+        
+        stretch_data_cmd = []
         is_all_valid = True
+        
         for data in self.stretch_items:
-            item, idx, g_type, old_coords = data['item'], data['index'], data['type'], data['old_coords']
-            new_coords = list(old_coords)
-            if g_type == 'line':
-                if idx == 0: new_coords[0] = (old_coords[0][0]+dx, old_coords[0][1]+dy)
-                elif idx == 2: new_coords[1] = (old_coords[1][0]+dx, old_coords[1][1]+dy)
-                elif idx == 1: 
-                    new_coords[0] = (old_coords[0][0]+dx, old_coords[0][1]+dy)
-                    new_coords[1] = (old_coords[1][0]+dx, old_coords[1][1]+dy)
-            elif g_type in ('poly', 'polyline'):
-                count = len(old_coords)
-                if idx < count: new_coords[idx] = (old_coords[idx][0]+dx, old_coords[idx][1]+dy)
-                else:
-                    edge_idx = idx - count
-                    p1_idx, p2_idx = edge_idx, (edge_idx + 1) % count
-                    new_coords[p1_idx] = (old_coords[p1_idx][0]+dx, old_coords[p1_idx][1]+dy)
-                    new_coords[p2_idx] = (old_coords[p2_idx][0]+dx, old_coords[p2_idx][1]+dy)
-            elif g_type == 'dim': new_coords[idx] = (old_coords[idx][0]+dx, old_coords[idx][1]+dy)
-            elif g_type == 'circle' or g_type == 'arc':
-                if idx == 0:
-                    new_coords[0] = (old_coords[0][0]+dx, old_coords[0][1]+dy)
-                    new_coords[1] = (old_coords[1][0]+dx, old_coords[1][1]+dy)
-                else: new_coords[1] = (old_coords[1][0]+dx, old_coords[1][1]+dy)
+            item = data['item']
+            old_data = data['old_data']
+            new_data = self._calculate_stretched_data(data, dx, dy)
             
-            if g_type == 'poly' and not GeometryEngine.is_valid_polygon(new_coords): is_all_valid = False
+            if data['type'] == 'poly' and not GeometryEngine.is_valid_polygon(new_data['coords']): 
+                is_all_valid = False
             
-            if g_type == 'arc':
-                c, e = new_coords[0], new_coords[1]
-                stretch_data.append((item, 
-                                     {'center': old_coords[0], 'radius': item.radius, 'sa': item.start_angle, 'ea': item.end_angle}, 
-                                     {'center': c, 'radius': math.hypot(e[0]-c[0], e[1]-c[1]), 'sa': item.start_angle, 'ea': item.end_angle}))
-            else:
-                stretch_data.append((item, old_coords, new_coords))
+            # 为了让撤销栈 UndoStack 能识别前后的状态变化，先把图形还原一次
+            apply_geom_data(item, old_data)
+            stretch_data_cmd.append((item, old_data, new_data))
 
-        if not is_all_valid: self._cleanup_temp_items(); return 
-        if stretch_data: self.canvas.undo_stack.push(CommandModifyMultipleGeom(stretch_data))
+        if not is_all_valid: 
+            self._cleanup_temp_items(); return 
+            
+        if stretch_data_cmd: 
+            self.canvas.undo_stack.push(CommandModifyMultipleGeom(stretch_data_cmd))
+            
         self._cleanup_temp_items()
         if hasattr(self.canvas, '_cleanup_tracking_huds'): self.canvas._cleanup_tracking_huds()
         self.canvas.viewport().update()
 
     def _finalize_move(self, final_point):
         if not self.move_items or not self.move_start_pos: return
-        dx = final_point.x() - self.move_start_pos.x(); dy = final_point.y() - self.move_start_pos.y()
-        move_data = []
-        for item in self.move_items:
-            old_c = list(item.coords)
-            new_c = [(x + dx, y + dy) for x, y in old_c]
-            move_data.append((item, old_c, new_c))
-        if move_data: self.canvas.undo_stack.push(CommandMoveGeom(move_data))
+        dx = final_point.x() - self.move_start_pos.x()
+        dy = final_point.y() - self.move_start_pos.y()
+        
+        move_data_cmd = []
+        for data in self.move_items:
+            item = data['item']
+            old_data = data['old_data']
+            new_data = self._calculate_moved_data(old_data, data['type'], dx, dy)
+            
+            # 先恢复原状
+            apply_geom_data(item, old_data)
+            if data['type'] == 'text' and 'pos' in old_data:
+                item.setPos(old_data['pos'])
+            
+            move_data_cmd.append((item, old_data, new_data))
+            
+        if move_data_cmd: 
+            self.canvas.undo_stack.push(CommandMoveGeom(move_data_cmd))
+            
         self._cleanup_temp_items()
         if hasattr(self.canvas, '_cleanup_tracking_huds'): self.canvas._cleanup_tracking_huds()
         self.canvas.viewport().update()

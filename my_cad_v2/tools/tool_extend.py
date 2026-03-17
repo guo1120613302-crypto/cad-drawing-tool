@@ -4,9 +4,13 @@ from PyQt6.QtWidgets import QGraphicsItem, QGraphicsPathItem
 from PyQt6.QtCore import Qt, QPointF, QRectF
 from PyQt6.QtGui import QPen, QColor, QUndoCommand, QPainterPath
 import shapely.geometry as sg
+from shapely.ops import unary_union
 
 from tools.base_tool import BaseTool
-from core.core_items import SmartLineItem, SmartPolygonItem, SmartCircleItem, SmartPolylineItem, SmartArcItem
+from core.core_items import (
+    SmartLineItem, SmartPolygonItem, SmartCircleItem, 
+    SmartPolylineItem, SmartArcItem, SmartEllipseItem, SmartSplineItem
+)
 
 class CommandExtendGeom(QUndoCommand):
     def __init__(self, scene, old_item, new_item, layer_manager):
@@ -68,59 +72,95 @@ class ExtendTool(BaseTool):
 
     def _get_item_geom(self, item):
         geom_type = getattr(item, 'geom_type', 'unknown')
+        if geom_type in ('text', 'dim', 'ortho_dim', 'rad_dim', 'angle_dim', 'arclen_dim', 'leader'):
+            return None
         try:
-            if geom_type in ('line', 'polyline'): return sg.LineString(item.coords)
-            elif geom_type == 'poly': 
+            if hasattr(item, 'get_geom_coords'):
+                coords = list(item.get_geom_coords())
+            else:
                 coords = list(item.coords)
-                if coords[0] != coords[-1]: coords.append(coords[0]) 
-                return sg.LineString(coords)
-            elif geom_type == 'circle': return sg.Point(item.center).buffer(item.radius, resolution=64).exterior
-            elif geom_type == 'arc': return sg.LineString(item.get_geom_coords())
+            if not coords or len(coords) < 2: return None
+            
+            if geom_type in ('poly', 'circle', 'ellipse'):
+                if math.hypot(coords[0][0] - coords[-1][0], coords[0][1] - coords[-1][1]) > 1e-5:
+                    coords.append(coords[0])
+            return sg.LineString(coords)
         except: pass
         return None
 
     def _get_boundaries(self, exclude_item):
-        """收集全图所有的图形作为可能的延伸边界墙壁"""
         lines = []
         for item in self.canvas.scene().items():
             if getattr(item, 'is_smart_shape', False) and item != exclude_item and item.isVisible():
                 geom = self._get_item_geom(item)
                 if geom and not geom.is_empty: lines.append(geom)
         if not lines: return None
-        return sg.MultiLineString(lines) if len(lines) > 1 else lines[0]
+        return unary_union(lines)
 
     def _get_extend_data(self, target_item, click_pos):
         geom_type = getattr(target_item, 'geom_type', '')
-        # 封闭图形（圆、矩形）不能被延伸
-        if geom_type in ('poly', 'circle'): return None
+        if geom_type in ('poly', 'circle', 'ellipse'): return None
 
         boundaries = self._get_boundaries(target_item)
-        if not boundaries: return None
+        if not boundaries or boundaries.is_empty: return None
 
         px, py = click_pos.x(), click_pos.y()
         
         # ==========================================
-        # 1. 直线与多段线的射线延伸逻辑
+        # 直线、多段线、样条曲线 的端点切线延伸逻辑
         # ==========================================
-        if geom_type in ('line', 'polyline'):
+        if geom_type in ('line', 'polyline', 'spline'):
             coords = list(target_item.coords)
+            if len(coords) < 2: return None
+            
+            segs = getattr(target_item, 'segments', []) if geom_type == 'polyline' else None
+            
             p_start, p_end = coords[0], coords[-1]
             dist_to_start = math.hypot(px - p_start[0], py - p_start[1])
             dist_to_end = math.hypot(px - p_end[0], py - p_end[1])
             
-            # 判断往哪头延伸
-            if dist_to_start < dist_to_end:
-                idx_target = 0
-                vx, vy = coords[0][0] - coords[1][0], coords[0][1] - coords[1][1]
-            else:
-                idx_target = -1
-                vx, vy = coords[-1][0] - coords[-2][0], coords[-1][1] - coords[-2][1]
-
-            length = math.hypot(vx, vy)
-            if length < 1e-4: return None
-            nx, ny = vx / length, vy / length
+            is_start = dist_to_start < dist_to_end
+            idx_target = 0 if is_start else -1
             
-            # 发射一条长达 10000 像素的虚拟射线去撞墙
+            # 【修复点】：智能切线求导，如果末端是圆弧，顺着切线射出
+            if geom_type == 'polyline' and segs:
+                if is_start:
+                    seg = segs[0] if len(segs) > 0 else {}
+                    if seg.get('type') == 'arc' and 'bulge' in seg:
+                        bulge = seg['bulge']
+                        dx, dy = coords[1][0] - coords[0][0], coords[1][1] - coords[0][1]
+                        chord_angle = math.atan2(dy, dx)
+                        alpha = 2 * math.atan(bulge)
+                        tangent_angle = chord_angle - alpha
+                        nx, ny = -math.cos(tangent_angle), -math.sin(tangent_angle)
+                    else:
+                        vx, vy = coords[0][0] - coords[1][0], coords[0][1] - coords[1][1]
+                        length = math.hypot(vx, vy)
+                        if length < 1e-4: return None
+                        nx, ny = vx / length, vy / length
+                else:
+                    seg = segs[-1] if len(segs) > 0 else {}
+                    if seg.get('type') == 'arc' and 'bulge' in seg:
+                        bulge = seg['bulge']
+                        dx, dy = coords[-1][0] - coords[-2][0], coords[-1][1] - coords[-2][1]
+                        chord_angle = math.atan2(dy, dx)
+                        alpha = 2 * math.atan(bulge)
+                        tangent_angle = chord_angle + alpha
+                        nx, ny = math.cos(tangent_angle), math.sin(tangent_angle)
+                    else:
+                        vx, vy = coords[-1][0] - coords[-2][0], coords[-1][1] - coords[-2][1]
+                        length = math.hypot(vx, vy)
+                        if length < 1e-4: return None
+                        nx, ny = vx / length, vy / length
+            else:
+                if is_start:
+                    vx, vy = coords[0][0] - coords[1][0], coords[0][1] - coords[1][1]
+                else:
+                    vx, vy = coords[-1][0] - coords[-2][0], coords[-1][1] - coords[-2][1]
+                length = math.hypot(vx, vy)
+                if length < 1e-4: return None
+                nx, ny = vx / length, vy / length
+            
             ray_start = coords[idx_target]
             ray_end = (ray_start[0] + nx * 10000, ray_start[1] + ny * 10000)
             ray_line = sg.LineString([ray_start, ray_end])
@@ -135,19 +175,22 @@ class ExtendTool(BaseTool):
                 elif g.geom_type == 'MultiPoint': pts.extend(list(g.geoms))
                 elif g.geom_type == 'GeometryCollection':
                     for sub_g in g.geoms: pts.extend(extract_points(sub_g))
+                elif g.geom_type in ('LineString', 'MultiLineString'):
+                    if g.geom_type == 'LineString': pts.append(sg.Point(g.coords[0]))
+                    else:
+                        for line in g.geoms: pts.append(sg.Point(line.coords[0]))
                 return pts
 
             pts = extract_points(intersections)
             if not pts: return None
 
-            # 找出正前方最近的那个交点（墙壁）
             min_dist = float('inf')
             best_pt = None
             ray_start_pt = sg.Point(*ray_start)
+            
             for pt in pts:
                 dist = pt.distance(ray_start_pt)
-                if 1e-3 < dist < min_dist:  # 排除起点自身的微小误差
-                    # 检查是否在正方向
+                if 1e-3 < dist < min_dist:
                     dot_product = (pt.x - ray_start[0])*nx + (pt.y - ray_start[1])*ny
                     if dot_product > 0:
                         min_dist = dist
@@ -156,18 +199,40 @@ class ExtendTool(BaseTool):
             if not best_pt: return None
 
             new_coords = list(coords)
-            new_coords[idx_target] = best_pt
-            return {'type': geom_type, 'coords': new_coords}
+            
+            # 【修复点】：完美保留和追加 segments 数据，不破坏原有弧形
+            new_segs = None
+            if geom_type == 'polyline':
+                new_segs = list(segs) if segs else []
+                if new_segs:
+                    while len(new_segs) < len(coords) - 1:
+                        new_segs.append({'type': 'line'})
+                        
+                if is_start:
+                    new_coords.insert(0, best_pt)
+                    new_segs.insert(0, {'type': 'line'})
+                else:
+                    new_coords.append(best_pt)
+                    new_segs.append({'type': 'line'})
+                    
+            elif geom_type == 'spline':
+                if is_start:
+                    new_coords.insert(0, best_pt)
+                else:
+                    new_coords.append(best_pt)
+            else:
+                new_coords[idx_target] = best_pt
+                
+            return {'type': geom_type, 'coords': new_coords, 'segments': new_segs}
 
         # ==========================================
-        # 2. 圆弧的轨道生长延伸逻辑
+        # 圆弧的轨道生长延伸逻辑
         # ==========================================
         elif geom_type == 'arc':
             cx, cy = target_item.center
             r = target_item.radius
             sa, ea = target_item.start_angle, target_item.end_angle
             
-            # 判断点击位置离圆弧的头近还是尾近
             click_angle = math.degrees(math.atan2(-(py - cy), px - cx))
             if click_angle < 0: click_angle += 360
             
@@ -177,10 +242,9 @@ class ExtendTool(BaseTool):
             dist_to_sa = min(diff_ccw(click_angle, sa), diff_cw(click_angle, sa))
             dist_to_ea = min(diff_ccw(click_angle, ea), diff_cw(click_angle, ea))
             
-            is_extend_ccw = (dist_to_ea < dist_to_sa) # 往逆时针(end_angle)方向生长
+            is_extend_ccw = (dist_to_ea < dist_to_sa)
             
-            # 画一个完整的圆去探测墙壁
-            ring = sg.Point(cx, cy).buffer(r, resolution=64).exterior
+            ring = sg.Point(cx, cy).buffer(r, resolution=128).exterior
             intersections = ring.intersection(boundaries)
             if intersections.is_empty: return None
             
@@ -205,7 +269,7 @@ class ExtendTool(BaseTool):
                 
                 if is_extend_ccw:
                     diff = diff_ccw(pt_a, ea)
-                    if 0.1 < diff < min_diff: # 排除自身误差
+                    if 0.1 < diff < min_diff:
                         min_diff = diff
                         best_angle = pt_a
                 else:
@@ -222,7 +286,6 @@ class ExtendTool(BaseTool):
         return None
 
     def _update_preview(self, final_point):
-        # 【X光透视寻找图形】
         lod = self.canvas.transform().m11()
         hit_size = 10.0 / lod if lod > 0 else 10.0
         rect = QRectF(final_point.x() - hit_size/2, final_point.y() - hit_size/2, hit_size, hit_size)
@@ -230,7 +293,7 @@ class ExtendTool(BaseTool):
         
         target_item = None
         for it in items:
-            if getattr(it, 'is_smart_shape', False):
+            if getattr(it, 'is_smart_shape', False) and getattr(it, 'geom_type', '') not in ('text', 'dim', 'ortho_dim', 'rad_dim', 'angle_dim', 'arclen_dim', 'leader'):
                 target_item = it; break
                 
         if not target_item:
@@ -246,14 +309,14 @@ class ExtendTool(BaseTool):
             
         if not self.ghost_item:
             self.ghost_item = QGraphicsPathItem()
-            pen = QPen(QColor(0, 255, 0, 200), 2, Qt.PenStyle.DashLine) # 醒目的绿色虚线预览
+            pen = QPen(QColor(0, 255, 0, 200), 2, Qt.PenStyle.DashLine) 
             pen.setCosmetic(True)
             self.ghost_item.setPen(pen)
             self.ghost_item.setZValue(5000)
             self.canvas.scene().addItem(self.ghost_item)
             
         path = QPainterPath()
-        if data['type'] in ('line', 'polyline'):
+        if data['type'] in ('line', 'polyline', 'spline'):
             coords = data['coords']
             path.moveTo(QPointF(*coords[0]))
             for x, y in coords[1:]: path.lineTo(QPointF(x, y))
@@ -278,7 +341,10 @@ class ExtendTool(BaseTool):
                 if data['type'] == 'line':
                     new_item = SmartLineItem(data['coords'][0], data['coords'][1])
                 elif data['type'] == 'polyline':
-                    new_item = SmartPolylineItem(data['coords'])
+                    # 【核心修复】：注入 segments，恢复多段线的原有弧度
+                    new_item = SmartPolylineItem(data['coords'], segments=data.get('segments'))
+                elif data['type'] == 'spline':
+                    new_item = SmartSplineItem(data['coords'])
                 elif data['type'] == 'arc':
                     new_item = SmartArcItem(data['center'], data['radius'], data['sa'], data['ea'])
                     

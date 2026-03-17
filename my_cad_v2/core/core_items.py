@@ -1054,6 +1054,15 @@ class SmartTextItem(QGraphicsTextItem, SmartShapeMixin):
         self.setTextCursor(cursor)
         self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
 
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.clearFocus()  # 主动失去焦点，触发 focusOutEvent 停止光标闪烁
+            event.ignore()     # 忽略事件让其冒泡给画布，从而触发工具切换为“选择”
+        else:
+            super().keyPressEvent(event)
+
+            
     def mouseDoubleClickEvent(self, event):
         if self.textInteractionFlags() == Qt.TextInteractionFlag.NoTextInteraction:
             self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
@@ -1413,3 +1422,96 @@ class SmartArcLengthDimensionItem(QGraphicsItem, SmartShapeMixin):
         tx = c[0] + (dim_radius + 15)*math.cos(mid_rad) - tw/2
         ty = c[1] - (dim_radius + 15)*math.sin(mid_rad) + 5
         painter.drawText(int(tx), int(ty), text_str)
+# =========================================================
+# 真正的块管理器 (Block Manager) 与实例组件 [终极防弹版]
+# =========================================================
+from PyQt6.QtWidgets import QGraphicsItemGroup, QGraphicsItem
+from PyQt6.QtGui import QPen, QBrush
+
+BLOCK_REGISTRY = {}  # 全局块定义仓库：{ "块名称": [相对原点(0,0)的图元对象列表] }
+
+def clone_geometry_item(item, dx=0, dy=0):
+    """深度克隆引擎：增加严密的类型容错与深拷贝，绝不引发异常"""
+    try:
+        if not item or not hasattr(item, 'geom_type'):
+            return None
+        new_item = None
+        if isinstance(item, SmartLineItem):
+            new_item = SmartLineItem((item.coords[0][0]+dx, item.coords[0][1]+dy), 
+                                     (item.coords[1][0]+dx, item.coords[1][1]+dy))
+        elif isinstance(item, SmartPolygonItem):
+            new_item = SmartPolygonItem([(x+dx, y+dy) for x, y in item.coords])
+        elif isinstance(item, SmartPolylineItem):
+            new_item = SmartPolylineItem([(x+dx, y+dy) for x, y in item.coords])
+            if hasattr(item, 'segments'): new_item.segments = list(item.segments)
+        elif isinstance(item, SmartArcItem):
+            cx, cy = item.center
+            new_item = SmartArcItem((cx+dx, cy+dy), item.radius, item.start_angle, item.end_angle)
+        elif isinstance(item, SmartCircleItem):
+            cx, cy = item.center
+            new_item = SmartCircleItem((cx+dx, cy+dy), item.radius)
+        elif isinstance(item, SmartEllipseItem):
+            cx, cy = item.center
+            try: new_item = SmartEllipseItem((cx+dx, cy+dy), item.rx, item.ry, getattr(item, 'rotation_angle', 0))
+            except TypeError: new_item = SmartEllipseItem((cx+dx, cy+dy), item.rx, item.ry)
+        elif isinstance(item, SmartSplineItem):
+            new_item = SmartSplineItem([(x+dx, y+dy) for x, y in item.coords])
+
+        if new_item:
+            # 必须使用 QPen 和 QBrush 的构造函数进行深拷贝
+            if hasattr(item, 'pen'):
+                new_item.setPen(QPen(item.pen()))
+            if hasattr(item, 'brush') and hasattr(new_item, 'setBrush'):
+                new_item.setBrush(QBrush(item.brush()))
+            
+            # 确保 ID 标识同步
+            new_item.is_smart_shape = True
+            return new_item
+    except Exception as e:
+        print(f"Clone error: {e}")
+        
+    return None  
+
+
+class SmartBlockReference(QGraphicsItem): # 抛弃 ItemGroup，用最基础的 Item
+    def __init__(self, block_name):
+        super().__init__()
+        self.is_smart_shape = True  
+        self.is_block = True        
+        self.block_name = block_name
+        self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable | QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
+        self.hot_grip_index = -1 
+
+    def boundingRect(self):
+        # 手动算出里面所有线条的范围，否则系统不知道在哪画框
+        return self.childrenBoundingRect()
+
+    def paint(self, painter, option, widget=None):
+        # 绘制选中时的蓝色虚线框
+        if self.isSelected():
+            painter.setPen(QPen(QColor(0, 120, 215), 1, Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(self.boundingRect())
+
+    def get_grips(self):
+        return [(self.x(), self.y())]
+
+    def get_geom_coords(self):
+        return []
+
+    def rebuild_from_registry(self):
+        self.prepareGeometryChange() 
+        
+        # 1. 彻底切断旧子项的联系
+        for child in list(self.childItems()):
+            child.setParentItem(None)
+            if child.scene():
+                child.scene().removeItem(child)
+
+        # 2. 从注册表克隆新成员
+        if self.block_name in BLOCK_REGISTRY:
+            for template_item in BLOCK_REGISTRY[self.block_name]:
+                new_child = clone_geometry_item(template_item, 0, 0)
+                if new_child:
+                    new_child.setParentItem(self)
+        self.update()

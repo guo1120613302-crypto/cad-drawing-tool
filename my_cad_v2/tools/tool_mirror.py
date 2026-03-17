@@ -1,16 +1,21 @@
 # tools/tool_mirror.py
 import math
+import copy
 from tools.base_tool import BaseTool
 from core.core_items import (
     SmartLineItem, SmartPolygonItem, SmartDimensionItem, 
-    SmartCircleItem, SmartPolylineItem, SmartArcItem
+    SmartCircleItem, SmartPolylineItem, SmartArcItem,
+    SmartEllipseItem, SmartSplineItem, SmartTextItem,
+    SmartOrthogonalDimensionItem, SmartLeaderItem,
+    SmartRadiusDimensionItem, SmartAngleDimensionItem,
+    SmartArcLengthDimensionItem
 )
 from PyQt6.QtWidgets import (
     QGraphicsItem, QGraphicsLineItem, QGraphicsPolygonItem, 
     QGraphicsPathItem, QGraphicsRectItem
 )
 from PyQt6.QtCore import Qt, QPointF, QLineF, QRectF
-from PyQt6.QtGui import QPen, QColor, QUndoCommand, QPolygonF, QPainterPath, QBrush
+from PyQt6.QtGui import QPen, QColor, QUndoCommand, QPolygonF, QPainterPath, QBrush, QTransform
 
 class CommandMirrorGeom(QUndoCommand):
     def __init__(self, scene, mirror_data, layer_manager):
@@ -23,16 +28,39 @@ class CommandMirrorGeom(QUndoCommand):
         for original_item, new_data in self.mirror_data:
             ItemClass = type(original_item)
             
+            # 支持 V2.0 全系图形的镜像重构分发
             if ItemClass == SmartArcItem: 
                 new_item = ItemClass(new_data['center'], new_data['radius'], new_data['sa'], new_data['ea'])
-            elif ItemClass == SmartPolygonItem or ItemClass == SmartPolylineItem: 
+            elif ItemClass == SmartEllipseItem:
+                new_item = ItemClass(new_data['center'], new_data['rx'], new_data['ry'], new_data['rotation_angle'])
+            elif ItemClass == SmartArcLengthDimensionItem:
+                new_item = ItemClass(new_data['center'], new_data['radius'], new_data['sa'], new_data['ea'], new_data['offset_pt'])
+            elif ItemClass in (SmartPolygonItem, SmartSplineItem): 
                 new_item = ItemClass(new_data)
-            elif ItemClass == SmartDimensionItem: 
+            elif ItemClass == SmartPolylineItem:
+                # 镜像多段线时，如果有包含圆弧（凸度），则必须将凸度取反
+                segs = []
+                if getattr(original_item, 'segments', None):
+                    segs = copy.deepcopy(original_item.segments)
+                    for seg in segs:
+                        if 'bulge' in seg:
+                            seg['bulge'] = -seg['bulge']
+                new_item = ItemClass(new_data, segments=segs)
+            elif ItemClass in (SmartDimensionItem, SmartOrthogonalDimensionItem): 
                 new_item = ItemClass(new_data[0], new_data[1], new_data[2])
+            elif ItemClass == SmartAngleDimensionItem:
+                new_item = ItemClass(new_data[0], new_data[1], new_data[2], new_data[3])
+            elif ItemClass == SmartRadiusDimensionItem:
+                new_item = ItemClass(new_data[0], new_data[1], original_item.prefix)
             elif ItemClass == SmartCircleItem:
-                r = math.hypot(new_data[1][0]-new_data[0][0], new_data[1][1]-new_data[0][1])
-                new_item = ItemClass(new_data[0], r)
+                new_item = ItemClass(new_data[0], original_item.radius)
+            elif ItemClass == SmartLeaderItem:
+                new_item = ItemClass(new_data[0], new_data[1])
+                new_item.text_item.setPlainText(original_item.text_item.toPlainText())
+            elif ItemClass == SmartTextItem:
+                new_item = ItemClass(original_item.toPlainText(), new_data[0])
             else: 
+                # Fallback For Line
                 new_item = ItemClass(new_data[0], new_data[1])
             
             pen = QPen(original_item.pen().color(), 1, original_item.pen().style())
@@ -161,6 +189,14 @@ class MirrorTool(BaseTool):
         mirror_a = math.degrees(math.atan2(-dy, dx)) if length_sq > 1e-6 else 0
         if mirror_a < 0: 
             mirror_a += 360
+            
+        # 提取通用的坐标点求镜像函数
+        def get_mirror_pt(px, py):
+            if length_sq < 1e-6: return px, py
+            t = ((px - x1)*dx + (py - y1)*dy) / length_sq
+            proj_x = x1 + t*dx
+            proj_y = y1 + t*dy
+            return 2*proj_x - px, 2*proj_y - py
         
         for data in self.ghost_items:
             item = data['item']
@@ -169,59 +205,61 @@ class MirrorTool(BaseTool):
             path = QPainterPath()
             
             if g_type == 'arc':
-                c = item.center
-                r = item.radius
-                sa = item.start_angle
-                ea = item.end_angle
-                
-                t = ((c[0] - x1)*dx + (c[1] - y1)*dy) / length_sq if length_sq > 1e-6 else 0
-                px = x1 + t*dx
-                py = y1 + t*dy
-                
-                if length_sq > 1e-6:
-                    nx, ny = 2*px - c[0], 2*py - c[1]
-                else:
-                    nx, ny = c
-                    
-                new_sa = (2 * mirror_a - ea) % 360
-                new_ea = (2 * mirror_a - sa) % 360
+                nx, ny = get_mirror_pt(*item.center)
+                new_sa = (2 * mirror_a - item.end_angle) % 360
+                new_ea = (2 * mirror_a - item.start_angle) % 360
                 span = new_ea - new_sa
-                if span <= 0: 
-                    span += 360
-                    
-                path.arcMoveTo(QRectF(nx-r, ny-r, 2*r, 2*r), new_sa)
-                path.arcTo(QRectF(nx-r, ny-r, 2*r, 2*r), new_sa, span)
+                if span <= 0: span += 360
+                path.arcMoveTo(QRectF(nx-item.radius, ny-item.radius, 2*item.radius, 2*item.radius), new_sa)
+                path.arcTo(QRectF(nx-item.radius, ny-item.radius, 2*item.radius, 2*item.radius), new_sa, span)
                 
+            elif g_type == 'ellipse':
+                nx, ny = get_mirror_pt(*item.center)
+                new_rot = (2 * mirror_a - item.rotation_angle) % 360
+                temp_path = QPainterPath()
+                temp_path.addEllipse(QRectF(-item.rx, -item.ry, 2*item.rx, 2*item.ry))
+                trans = QTransform()
+                trans.translate(nx, ny)
+                trans.rotate(-new_rot)
+                path = trans.map(temp_path)
+                
+            elif g_type == 'arclen_dim':
+                nx, ny = get_mirror_pt(*item.coords[0])
+                off_nx, off_ny = get_mirror_pt(*item.coords[1])
+                dim_radius = math.hypot(off_nx - nx, off_ny - ny)
+                new_sa = (2 * mirror_a - item.end_angle) % 360
+                new_ea = (2 * mirror_a - item.start_angle) % 360
+                span = new_ea - new_sa
+                if span <= 0: span += 360
+                path.arcMoveTo(QRectF(nx-dim_radius, ny-dim_radius, 2*dim_radius, 2*dim_radius), new_sa)
+                path.arcTo(QRectF(nx-dim_radius, ny-dim_radius, 2*dim_radius, 2*dim_radius), new_sa, span)
+
             else:
-                new_c = []
-                if length_sq < 1e-6: 
-                    new_c = list(item.coords)
-                else:
-                    for x, y in item.coords:
-                        t = ((x - x1)*dx + (y - y1)*dy) / length_sq
-                        px = x1 + t*dx
-                        py = y1 + t*dy
-                        new_c.append((2*px - x, 2*py - y))
-                        
-                if g_type == 'line': 
+                new_c = [get_mirror_pt(x, y) for x, y in item.coords]
+                if not new_c: continue
+                
+                if g_type in ('line', 'leader', 'rad_dim'): 
                     path.moveTo(QPointF(*new_c[0]))
                     path.lineTo(QPointF(*new_c[1]))
-                elif g_type == 'poly':
+                elif g_type in ('poly', 'polyline', 'spline'):
                     path.moveTo(QPointF(*new_c[0]))
                     for nx, ny in new_c[1:]: 
                         path.lineTo(QPointF(nx, ny))
-                    path.closeSubpath()
-                elif g_type == 'dim': 
-                    path = item.get_lines_path(new_c)
+                    if g_type == 'poly': path.closeSubpath()
+                elif g_type in ('dim', 'ortho_dim'): 
+                    path.moveTo(QPointF(*new_c[0]))
+                    path.lineTo(QPointF(*new_c[1]))
+                elif g_type == 'angle_dim':
+                    path.moveTo(QPointF(*new_c[0]))
+                    path.lineTo(QPointF(*new_c[1]))
+                    path.lineTo(QPointF(*new_c[2]))
                 elif g_type == 'circle':
                     c = new_c[0]
-                    e = new_c[1]
-                    r = math.hypot(e[0]-c[0], e[1]-c[1])
+                    r = getattr(item, 'radius', 0)
                     path.addEllipse(QPointF(*c), r, r)
-                elif g_type == 'polyline':
-                    path.moveTo(QPointF(*new_c[0]))
-                    for nx, ny in new_c[1:]: 
-                        path.lineTo(QPointF(nx, ny))
+                elif g_type == 'text':
+                    br = item.boundingRect()
+                    path.addRect(QRectF(new_c[0][0], new_c[0][1], br.width(), br.height()))
                         
             ghost.setPath(path)
 
@@ -357,32 +395,33 @@ class MirrorTool(BaseTool):
         if mirror_a < 0: 
             mirror_a += 360
 
+        def get_mirror_pt(px, py):
+            t = ((px - x1)*dx + (py - y1)*dy) / length_sq
+            proj_x = x1 + t*dx
+            proj_y = y1 + t*dy
+            return 2*proj_x - px, 2*proj_y - py
+
         mirror_data = []
         for item in self.target_items:
             g_type = getattr(item, 'geom_type', '')
             
             if g_type == 'arc':
-                c = item.center
-                r = item.radius
-                sa = item.start_angle
-                ea = item.end_angle
-                
-                t = ((c[0] - x1)*dx + (c[1] - y1)*dy) / length_sq
-                px = x1 + t*dx
-                py = y1 + t*dy
-                nx, ny = 2*px - c[0], 2*py - c[1]
-                
-                new_sa = (2 * mirror_a - ea) % 360
-                new_ea = (2 * mirror_a - sa) % 360
-                mirror_data.append((item, {'center': (nx, ny), 'radius': r, 'sa': new_sa, 'ea': new_ea}))
+                nx, ny = get_mirror_pt(*item.center)
+                new_sa = (2 * mirror_a - item.end_angle) % 360
+                new_ea = (2 * mirror_a - item.start_angle) % 360
+                mirror_data.append((item, {'center': (nx, ny), 'radius': item.radius, 'sa': new_sa, 'ea': new_ea}))
+            elif g_type == 'ellipse':
+                nx, ny = get_mirror_pt(*item.center)
+                new_rot = (2 * mirror_a - item.rotation_angle) % 360
+                mirror_data.append((item, {'center': (nx, ny), 'rx': item.rx, 'ry': item.ry, 'rotation_angle': new_rot}))
+            elif g_type == 'arclen_dim':
+                nx, ny = get_mirror_pt(*item.coords[0])
+                off_nx, off_ny = get_mirror_pt(*item.coords[1])
+                new_sa = (2 * mirror_a - item.end_angle) % 360
+                new_ea = (2 * mirror_a - item.start_angle) % 360
+                mirror_data.append((item, {'center': (nx, ny), 'radius': item.radius, 'sa': new_sa, 'ea': new_ea, 'offset_pt': (off_nx, off_ny)}))
             else:
-                old_c = list(item.coords)
-                new_c = []
-                for x, y in old_c:
-                    t = ((x - x1)*dx + (y - y1)*dy) / length_sq
-                    px = x1 + t*dx
-                    py = y1 + t*dy
-                    new_c.append((2*px - x, 2*py - y))
+                new_c = [get_mirror_pt(x, y) for x, y in item.coords]
                 mirror_data.append((item, new_c))
             
         if mirror_data: 

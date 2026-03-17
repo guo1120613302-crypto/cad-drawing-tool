@@ -130,6 +130,10 @@ class ArcTool(BaseTool):
                 self._create_arc_3point()
             elif self.mode == "center" and len(self.points) == 3:
                 self._create_arc_center()
+            # ==== 修改：增加下面这两行，拦截半径模式的第三次点击 ====
+            elif self.mode == "radius" and len(self.points) == 3:
+                self._create_arc_radius_from_point(pt)
+            # ========================================================
             elif self.mode == "radius" and len(self.points) == 2:
                 pass
                 
@@ -565,7 +569,38 @@ class ArcTool(BaseTool):
         if end_angle < 0: end_angle += 360
             
         self._finalize_arc(center, radius, start_angle, end_angle)
-
+    # ==== 新增方法：通过鼠标点击位置固化半径圆弧 ====
+    def _create_arc_radius_from_point(self, final_point):
+        if len(self.points) < 3: return
+        p1 = self.points[0]
+        p2 = self.points[1]
+        p3 = final_point
+        
+        mx, my = (p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2
+        chord = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+        dist_to_mid = math.hypot(p3[0] - mx, p3[1] - my)
+        radius = max(chord / 2, dist_to_mid + chord / 2)
+        
+        if chord > 2 * radius: return
+            
+        h = math.sqrt(radius * radius - (chord / 2) ** 2)
+        dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+        nx, ny = -dy / chord, dx / chord
+        
+        c1 = (mx + h * nx, my + h * ny)
+        c2 = (mx - h * nx, my - h * ny)
+        
+        dist1 = math.hypot(c1[0] - p3[0], c1[1] - p3[1])
+        dist2 = math.hypot(c2[0] - p3[0], c2[1] - p3[1])
+        
+        center = c1 if dist1 < dist2 else c2
+        start_angle = math.degrees(math.atan2(center[1] - p1[1], p1[0] - center[0]))
+        end_angle = math.degrees(math.atan2(center[1] - p2[1], p2[0] - center[0]))
+        
+        if start_angle < 0: start_angle += 360
+        if end_angle < 0: end_angle += 360
+            
+        self._finalize_arc(center, radius, start_angle, end_angle)
     def _finalize_arc(self, center, radius, start_angle, end_angle):
         arc_item = SmartArcItem(center, radius, start_angle, end_angle)
         arc_item.setPen(QPen(self.canvas.color_manager.get_color(), 1, Qt.PenStyle.SolidLine))

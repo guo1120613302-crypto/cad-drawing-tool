@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QGraphicsPathItem, QGraphicsRectItem
 )
 from PyQt6.QtCore import Qt, QPointF, QLineF, QRectF
-from PyQt6.QtGui import QPen, QColor, QUndoCommand, QPolygonF, QPainterPath, QBrush
+from PyQt6.QtGui import QPen, QColor, QUndoCommand, QPolygonF, QPainterPath, QBrush, QTransform
 
 class CommandRotateGeom(QUndoCommand):
     def __init__(self, rotate_data):
@@ -20,12 +20,31 @@ class CommandRotateGeom(QUndoCommand):
     def redo(self):
         for item, _, new_data in self.rotate_data:
             if item.scene():
-                item.set_coords(new_data)
+                # 兼容 V2.0 复杂图形直接更新特定属性 (如 ellipse 的角度)
+                if isinstance(new_data, dict) and new_data.get('dict_update'):
+                    for k, v in new_data.items():
+                        if k != 'dict_update' and hasattr(item, k):
+                            setattr(item, k, v)
+                    item.prepareGeometryChange()
+                    item.update()
+                elif isinstance(new_data, dict):
+                    item.set_coords(new_data)
+                else:
+                    item.set_coords(new_data)
 
     def undo(self):
         for item, old_data, _ in self.rotate_data:
             if item.scene():
-                item.set_coords(old_data)
+                if isinstance(old_data, dict) and old_data.get('dict_update'):
+                    for k, v in old_data.items():
+                        if k != 'dict_update' and hasattr(item, k):
+                            setattr(item, k, v)
+                    item.prepareGeometryChange()
+                    item.update()
+                elif isinstance(old_data, dict):
+                    item.set_coords(old_data)
+                else:
+                    item.set_coords(old_data)
 
 
 class RotateTool(BaseTool):
@@ -124,50 +143,73 @@ class RotateTool(BaseTool):
             g_type = data['type']
             path = QPainterPath()
             
+            # 通用旋转辅助函数
+            def rot_pt(x, y):
+                nx = bx + (x - bx) * cos_a - (y - by) * sin_a
+                ny = by + (x - bx) * sin_a + (y - by) * cos_a
+                return nx, ny
+
             if g_type == 'arc':
-                c = item.center
-                r = item.radius
-                sa = item.start_angle
-                ea = item.end_angle
-                
-                nx = bx + (c[0] - bx) * cos_a - (c[1] - by) * sin_a
-                ny = by + (c[0] - bx) * sin_a + (c[1] - by) * cos_a
-                
-                new_sa = (sa + delta_angle) % 360
-                new_ea = (ea + delta_angle) % 360
+                nx, ny = rot_pt(*item.center)
+                new_sa = (item.start_angle + delta_angle) % 360
+                new_ea = (item.end_angle + delta_angle) % 360
                 span = new_ea - new_sa
-                if span <= 0: 
-                    span += 360
-                    
-                rect = QRectF(nx - r, ny - r, 2 * r, 2 * r)
+                if span <= 0: span += 360
+                rect = QRectF(nx - item.radius, ny - item.radius, 2 * item.radius, 2 * item.radius)
                 path.arcMoveTo(rect, new_sa)
                 path.arcTo(rect, new_sa, span)
+                
+            elif g_type == 'ellipse':
+                nx, ny = rot_pt(*item.center)
+                rot = (item.rotation_angle + delta_angle) % 360
+                temp_path = QPainterPath()
+                temp_path.addEllipse(QRectF(-item.rx, -item.ry, 2*item.rx, 2*item.ry))
+                trans = QTransform()
+                trans.translate(nx, ny)
+                trans.rotate(-rot) # -rot 是因为 PyQt 的旋转是顺时针的，我们的系统逆时针为正
+                path = trans.map(temp_path)
+                
+            elif g_type == 'arclen_dim':
+                c, off = item.coords
+                nx, ny = rot_pt(*c)
+                off_nx, off_ny = rot_pt(*off)
+                dim_radius = math.hypot(off_nx - nx, off_ny - ny)
+                new_sa = (item.start_angle + delta_angle) % 360
+                new_ea = (item.end_angle + delta_angle) % 360
+                span = new_ea - new_sa
+                if span <= 0: span += 360
+                rect = QRectF(nx - dim_radius, ny - dim_radius, 2*dim_radius, 2*dim_radius)
+                path.arcMoveTo(rect, new_sa)
+                path.arcTo(rect, new_sa, span)
+                
             else:
-                new_c = []
-                for x, y in item.coords:
-                    nx = bx + (x - bx) * cos_a - (y - by) * sin_a
-                    ny = by + (x - bx) * sin_a + (y - by) * cos_a
-                    new_c.append((nx, ny))
+                new_c = [rot_pt(x, y) for x, y in item.coords]
+                if not new_c:
+                    continue
                     
-                if g_type == 'line': 
+                if g_type in ('line', 'leader', 'rad_dim'): 
                     path.moveTo(QPointF(*new_c[0]))
                     path.lineTo(QPointF(*new_c[1]))
-                elif g_type == 'poly':
+                elif g_type in ('poly', 'polyline', 'spline'):
                     path.moveTo(QPointF(*new_c[0]))
                     for nx, ny in new_c[1:]: 
                         path.lineTo(QPointF(nx, ny))
-                    path.closeSubpath()
-                elif g_type == 'dim': 
-                    path = item.get_lines_path(new_c)
+                    if g_type == 'poly': path.closeSubpath()
+                elif g_type in ('dim', 'ortho_dim'): 
+                    path.moveTo(QPointF(*new_c[0]))
+                    path.lineTo(QPointF(*new_c[1]))
+                elif g_type == 'angle_dim':
+                    path.moveTo(QPointF(*new_c[0]))
+                    path.lineTo(QPointF(*new_c[1]))
+                    path.lineTo(QPointF(*new_c[2]))
                 elif g_type == 'circle':
                     c = new_c[0]
                     e = new_c[1]
                     r = math.hypot(e[0] - c[0], e[1] - c[1])
                     path.addEllipse(QPointF(*c), r, r)
-                elif g_type == 'polyline':
-                    path.moveTo(QPointF(*new_c[0]))
-                    for nx, ny in new_c[1:]: 
-                        path.lineTo(QPointF(nx, ny))
+                elif g_type == 'text':
+                    br = item.boundingRect()
+                    path.addRect(QRectF(new_c[0][0], new_c[0][1], br.width(), br.height()))
                         
             ghost.setPath(path)
 
@@ -178,12 +220,10 @@ class RotateTool(BaseTool):
             if self.state == 0:
                 item = self.canvas.scene().itemAt(raw_point, self.canvas.transform())
                 if getattr(item, 'is_smart_shape', False):
-                    # 点选
                     if item not in self.target_items: 
                         self.target_items.append(item)
                         item.setSelected(True)
                 else:
-                    # 空白处点击，开启框选
                     self.start_point = raw_point
                     self.selection_box = QGraphicsRectItem()
                     pen = QPen(QColor(0, 120, 215), 1)
@@ -229,7 +269,6 @@ class RotateTool(BaseTool):
         raw_point = self.canvas.mapToScene(event.pos())
         self._update_hud()
         
-        # 处理框选动画
         if self.state == 0 and self.selection_box and self.start_point:
             x = min(self.start_point.x(), raw_point.x())
             y = min(self.start_point.y(), raw_point.y())
@@ -238,7 +277,6 @@ class RotateTool(BaseTool):
             
             self.selection_box.setRect(x, y, w, h)
             
-            # 判断蓝框(全包围)还是绿框(交叉)
             is_blue = raw_point.x() > self.start_point.x()
             color = QColor(0, 120, 215) if is_blue else QColor(76, 175, 80)
             pen_style = Qt.PenStyle.SolidLine if is_blue else Qt.PenStyle.DashLine
@@ -314,28 +352,53 @@ class RotateTool(BaseTool):
         rotate_data = []
         for item in self.target_items:
             g_type = getattr(item, 'geom_type', '')
+            
+            def rot_pt(x, y):
+                nx = bx + (x - bx) * cos_a - (y - by) * sin_a
+                ny = by + (x - bx) * sin_a + (y - by) * cos_a
+                return nx, ny
+
             if g_type == 'arc':
                 c = item.center
                 r = item.radius
-                sa = item.start_angle
-                ea = item.end_angle
+                nx, ny = rot_pt(*c)
+                new_sa = (item.start_angle + delta_angle) % 360
+                new_ea = (item.end_angle + delta_angle) % 360
                 
-                nx = bx + (c[0] - bx) * cos_a - (c[1] - by) * sin_a
-                ny = by + (c[0] - bx) * sin_a + (c[1] - by) * cos_a
-                
-                new_sa = (sa + delta_angle) % 360
-                new_ea = (ea + delta_angle) % 360
-                
-                old_data = {'center': c, 'radius': r, 'sa': sa, 'ea': ea}
+                old_data = {'center': c, 'radius': r, 'sa': item.start_angle, 'ea': item.end_angle}
                 new_data = {'center': (nx, ny), 'radius': r, 'sa': new_sa, 'ea': new_ea}
                 rotate_data.append((item, old_data, new_data))
+                
+            elif g_type == 'ellipse':
+                c = item.center
+                nx, ny = rot_pt(*c)
+                new_rot = (item.rotation_angle + delta_angle) % 360
+                
+                old_data = {'dict_update': True, 'center': c, 'rotation_angle': item.rotation_angle, 'coords': item.coords}
+                
+                new_rad = math.radians(new_rot)
+                new_coords = [
+                    (nx, ny),
+                    (nx + item.rx * math.cos(new_rad), ny - item.rx * math.sin(new_rad)),
+                    (nx - item.ry * math.sin(new_rad), ny - item.ry * math.cos(new_rad))
+                ]
+                new_data = {'dict_update': True, 'center': (nx, ny), 'rotation_angle': new_rot, 'coords': new_coords}
+                rotate_data.append((item, old_data, new_data))
+                
+            elif g_type == 'arclen_dim':
+                c, off = item.coords
+                nx, ny = rot_pt(*c)
+                off_nx, off_ny = rot_pt(*off)
+                new_sa = (item.start_angle + delta_angle) % 360
+                new_ea = (item.end_angle + delta_angle) % 360
+                
+                old_data = {'dict_update': True, 'coords': item.coords, 'start_angle': item.start_angle, 'end_angle': item.end_angle}
+                new_data = {'dict_update': True, 'coords': [(nx, ny), (off_nx, off_ny)], 'start_angle': new_sa, 'end_angle': new_ea}
+                rotate_data.append((item, old_data, new_data))
+                
             else:
                 old_c = list(item.coords)
-                new_c = []
-                for x, y in old_c:
-                    nx = bx + (x - bx) * cos_a - (y - by) * sin_a
-                    ny = by + (x - bx) * sin_a + (y - by) * cos_a
-                    new_c.append((nx, ny))
+                new_c = [rot_pt(x, y) for x, y in old_c]
                 rotate_data.append((item, old_c, new_c))
             
         if rotate_data:

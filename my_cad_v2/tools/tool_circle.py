@@ -158,6 +158,22 @@ class CircleTool(BaseTool):
             except ValueError:
                 pass
 
+
+    def _update_hud(self):
+        if hasattr(self.canvas, 'hud_polar_info') and self.canvas.hud_polar_info:
+            if len(self.points) == 1:
+                # 获取鼠标当前坐标
+                cursor_pt = getattr(self, 'last_mouse_point', getattr(self.canvas, 'last_cursor_point', None))
+                if cursor_pt:
+                    import math
+                    dx = cursor_pt.x() - self.points[0][0]
+                    dy = cursor_pt.y() - self.points[0][1]
+                    radius = math.hypot(dx, dy)
+                    self.canvas.hud_polar_info.setPlainText(f"半径: {radius:.2f}")
+            else:
+                self.canvas.hud_polar_info.setPlainText("")
+
+                
     def _finalize_circle(self, radius):
         if radius <= 0: return
             
